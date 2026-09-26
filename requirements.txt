@@ -1,0 +1,3 @@
+# Only needed for the tray icon. Everything else uses Python's built-in modules.
+pystray>=0.19
+Pillow>=10.0

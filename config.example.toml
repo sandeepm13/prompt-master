@@ -1,0 +1,78 @@
+# =====================================================================
+#  Master Prompt - settings
+#  After editing: right-click the tray icon > "Reload config".
+#  Lines starting with # are comments (ignored).
+# =====================================================================
+
+[hotkeys]
+# Grab the text from the box you're typing in, improve it, put it back.
+enhance = "win+shift+p"
+# Improve whatever text is on the clipboard (for terminals / apps where
+# the main shortcut can't grab text). Result goes back to the clipboard.
+# Set to "" to turn it off.
+enhance_clipboard = "win+shift+o"
+
+[behavior]
+preview = true              # true = show the popup first; false = replace text directly
+auto_select_all = true      # if you didn't select anything, use ALL text in the box
+restore_clipboard = true    # put back whatever you had copied before
+default_style = "enhance"   # enhance | coding | concise | detailed | (your own style)
+timeout_seconds = 30        # per provider
+paste_restore_delay_ms = 600
+save_history = true         # keeps before/after pairs in data/history.jsonl
+
+# ---------------------------------------------------------------------
+#  AI providers - tried top to bottom. If one fails (limit reached,
+#  offline, error), the next one is used automatically.
+#
+#  API keys: EITHER paste the key into api_key = "..."
+#            OR set a Windows environment variable (safer):
+#               setx GROQ_API_KEY "gsk_..."
+#               setx GEMINI_API_KEY "AIza..."
+#            (then restart the app)
+#
+#  Free keys:  Groq   -> https://console.groq.com/keys
+#              Gemini -> https://aistudio.google.com/apikey
+# ---------------------------------------------------------------------
+
+[[providers]]
+name = "groq"
+base_url = "https://api.groq.com/openai/v1"
+model = "openai/gpt-oss-120b"         # other options: openai/gpt-oss-20b (faster), qwen/qwen3.8-27b
+api_key = ""
+api_key_env = "GROQ_API_KEY"
+temperature = 0.3
+extra_params = { reasoning_effort = "low" }   # gpt-oss thinks first; "low" = faster
+
+[[providers]]
+name = "gemini"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+model = "gemini-3.5-flash"            # see https://ai.google.dev/gemini-api/docs/models
+api_key = ""
+api_key_env = "GEMINI_API_KEY"
+temperature = 0.3
+
+# Want more backups? Uncomment one of these.
+#
+# [[providers]]
+# name = "openrouter"
+# base_url = "https://openrouter.ai/api/v1"
+# model = "anthropic/claude-sonnet-4.5"
+# api_key_env = "OPENROUTER_API_KEY"
+#
+# [[providers]]                        # runs on your own PC, works offline
+# name = "ollama"
+# base_url = "http://localhost:11434/v1"
+# model = "llama3.2"
+
+[apps]
+# Apps where the main shortcut is disabled, because Ctrl+C there means
+# "stop the running command". Use the enhance_clipboard shortcut instead.
+blocked = ["WindowsTerminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "conhost.exe", "wsl.exe", "mintty.exe"]
+
+# ---------------------------------------------------------------------
+#  Your own styles (appear in the popup's dropdown). Example:
+# ---------------------------------------------------------------------
+# [styles.linkedin]
+# label = "LinkedIn"
+# instructions = "Extra guidance - the prompt is for writing a LinkedIn post. Ask for a hook, short lines and a CTA."
