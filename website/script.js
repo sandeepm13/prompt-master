@@ -99,4 +99,32 @@ document.addEventListener('DOMContentLoaded', () => {
   window.addEventListener('scroll', updateTarget, { passive: true });
 
   if (video.readyState >= 2) ready();
+
+  const downloadBtn = document.getElementById('download-btn');
+  const downloadCount = document.getElementById('download-count');
+  
+  if (downloadBtn && downloadCount) {
+    let count = 0;
+    
+    // Fetch live download count from GitHub Releases API
+    fetch('https://api.github.com/repos/sandeepm13/prompt-master/releases/tags/downloads')
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.assets && data.assets.length > 0) {
+          count = data.assets[0].download_count || 0;
+          downloadCount.textContent = count + (count === 1 ? ' download' : ' downloads');
+        } else {
+          downloadCount.textContent = '0 downloads';
+        }
+      })
+      .catch(e => {
+        downloadCount.style.display = 'none';
+      });
+
+    // Optimistically update count on click
+    downloadBtn.addEventListener('click', () => {
+      count++;
+      downloadCount.textContent = count + (count === 1 ? ' download' : ' downloads');
+    });
+  }
 });
