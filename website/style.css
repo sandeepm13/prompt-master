@@ -10,7 +10,14 @@ a:focus-visible{outline:2px solid currentColor;outline-offset:6px}
 .tag{display:inline-flex;align-items:center;border-radius:100px;background:#f7f8fa;padding:.39vw .61vw;font-size:.88vw;line-height:1.2;height:1.9vw;white-space:nowrap}
 .headline{font-family:Epilogue,Arial,sans-serif;font-weight:900;font-size:1.66vw;line-height:1.2;letter-spacing:0}
 .job-title{display:block;margin-top:1.45vw}
-.footer-nav{display:flex;flex-direction:column;align-items:flex-start;gap:.93vw;margin-top:1.3vw;font-size:1.075vw;line-height:1.35}
+.prompt-demo{display:flex;flex-direction:column;gap:0.8vw;margin-top:1.5vw;}
+.prompt-box{padding:1vw 1.2vw;border-radius:0.8vw;font-size:0.85vw;line-height:1.45;box-shadow:0 4px 12px rgba(0,0,0,0.03);text-align:left;}
+.prompt-label{display:block;font-family:Epilogue,Arial,sans-serif;font-weight:900;font-size:0.75vw;margin-bottom:0.4vw;text-transform:uppercase;letter-spacing:0.05em;}
+.prompt-box.raw{background:rgba(255,255,255,0.7);color:#52525b;}
+.prompt-box.raw .prompt-label{color:#a1a1aa;}
+.prompt-box.enhanced{background:#cfa5f6;color:#ffffff;box-shadow:0 8px 24px rgba(168,85,247,0.25);}
+.prompt-box.enhanced .prompt-label{color:rgba(255,255,255,0.8);}
+.prompt-box p{margin:0;font-family:'DM Sans',Arial,sans-serif; font-style: italic;}
 
 .contact{position:absolute;left:74.3vw;top:6.54vw}
 .contact-links{display:flex;flex-direction:column;align-items:flex-start;margin-top:1.45vw;white-space:nowrap}
@@ -65,8 +72,9 @@ a:focus-visible{outline:2px solid currentColor;outline-offset:6px}
   .tag{height:30px;padding:6px 11px;font-size:14px}
   .headline{font-size:clamp(22px,6.3vw,30px);line-height:1.25}
   .job-title,.contact-links{margin-top:19px}
-  .footer-nav{display:grid;grid-template-columns:1fr 1fr;gap:0 24px;margin-top:20px;font-size:17px;line-height:1.4}
-  .footer-nav span{display:flex;align-items:center;min-height:44px}
+  .prompt-demo{gap:12px;margin-top:20px;}
+  .prompt-box{padding:16px 20px;border-radius:12px;font-size:14px;}
+  .prompt-label{font-size:11px;margin-bottom:6px;}
   .contact{position:static;order:2;width:100%}
   .contact-links{gap:4px;white-space:normal}
   .note{max-width:34ch;margin:16px 0 0;font-size:14px;line-height:1.5;white-space:normal}
