@@ -29,6 +29,9 @@ echo [3/3] Building the installer ...
 set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
 if not exist "%ISCC%" set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
 if not exist "%ISCC%" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+if not exist "%ISCC%" set "ISCC=%ProgramFiles(x86)%\Inno Setup 7\ISCC.exe"
+if not exist "%ISCC%" set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 7\ISCC.exe"
+if not exist "%ISCC%" set "ISCC=%ProgramFiles%\Inno Setup 7\ISCC.exe"
 if not exist "%ISCC%" (
     echo  Inno Setup 6 is not installed, so only the .exe was built.
     echo  Get it from https://jrsoftware.org/isdl.php and run this file again.

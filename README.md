@@ -1,10 +1,10 @@
 # ✨ Master Prompt
 
-Type a rough prompt in any app, press **Win + Shift + P**, and it turns into a clear, well-structured prompt.
+Type a rough prompt in any app, press **Ctrl + Alt + P**, and it turns into a clear, well-structured prompt.
 It works like Grammarly or Win+H: one shortcut, and it works in ChatGPT, Claude, Gemini, your browser, VS Code, Notion, WhatsApp Desktop, and other apps.
 
 ```
- you type / speak (Win+H)       press Win+Shift+P            popup shows the better prompt       Enter
+ you type / speak (Win+H)       press Ctrl+Alt+P            popup shows the better prompt       Enter
  "make me react todo app  ──►   text is copied and sent  ──►  (you can edit it, pick a style)  ──► it replaces
   with login how to start"      to Groq (Gemini as backup)                                          your text
 ```
@@ -32,15 +32,15 @@ It works like Grammarly or Win+H: one shortcut, and it works in ChatGPT, Claude,
 
 | What you want | What you do |
 |---|---|
-| Improve the whole prompt in a text box | Click in the box, press **Win+Shift+P** |
-| Improve only part of the text | Select that part, press **Win+Shift+P** |
+| Improve the whole prompt in a text box | Click in the box, press **Ctrl+Alt+P** |
+| Improve only part of the text | Select that part, press **Ctrl+Alt+P** |
 | In the popup: use the prompt | **Enter** (or the "Use prompt" button) |
 | In the popup: add a new line | **Shift+Enter** |
 | Try again / pick another style | **Ctrl+R**, or change the dropdown (Enhance, Coding, Concise, Detailed) |
 | See what you originally wrote | "Original" button |
 | Cancel | **Esc** |
 | Undo after it replaced your text | **Ctrl+Z** in your app |
-| Terminal / Claude Code / apps where it can't grab text | Copy your text, press **Win+Shift+O**, then paste with Ctrl+V |
+| Terminal / Claude Code / apps where it can't grab text | Copy your text, press **Ctrl+Alt+O**, then paste with Ctrl+V |
 
 Tray icon (right-click): turn preview on/off, open config, reload config, open history, open log, quit.
 
@@ -50,7 +50,7 @@ Tray icon (right-click): turn preview on/off, open config, reload config, open h
 master_prompt/
 ├── __main__.py   start here: `python -m master_prompt` (also --test and --check)
 ├── app.py        connects all the steps below; keeps the app responsive using threads
-├── hotkeys.py    asks Windows to tell us when Win+Shift+P is pressed (RegisterHotKey)
+├── hotkeys.py    asks Windows to tell us when Ctrl+Alt+P is pressed (RegisterHotKey)
 ├── capture.py    copies the text out of your app and pastes the new text back
 ├── winapi.py     low-level Windows functions (keyboard, clipboard, windows) using ctypes
 ├── llm.py        sends the text to Groq/Gemini and tries the next one if a provider fails
@@ -88,8 +88,8 @@ After changing settings: tray icon → **Reload config**.
 
 | Problem | Fix |
 |---|---|
-| "Win+Shift+P is already used by another app" | Change `enhance` in config.toml, then Reload config |
-| Nothing happens in one specific app | That app may be running as Administrator. Windows blocks normal apps from typing into admin apps. Run `run.bat` as admin, or use Win+Shift+O |
+| "Ctrl+Alt+P is already used by another app" | Change `enhance` in config.toml, then Reload config |
+| Nothing happens in one specific app | That app may be running as Administrator. Windows blocks normal apps from typing into admin apps. Run `run.bat` as admin, or use Ctrl+Alt+O |
 | It pasted into the wrong place | You switched windows while it was thinking. Press Ctrl+Z there; the prompt is on your clipboard |
 | Old text isn't replaced, the new text is added next to it | That app keeps the selection in a strange way. Select all yourself (Ctrl+A) before pressing the shortcut |
 | Errors | Run `run-debug.bat` to see messages, or open `data/master-prompt.log` |

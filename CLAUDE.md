@@ -1,6 +1,6 @@
 # CLAUDE.md — Master Prompt
 
-Windows tray app. Global hotkey → grab text from the focused text box (clipboard + synthetic Ctrl+C/A) →
+Windows tray app. Global hotkey →te grab text from the focused xt box (clipboard + synthetic Ctrl+C/A) →
 OpenAI-compatible LLM (Groq, then Gemini as fallback) → tkinter preview popup → paste back (Ctrl+V) → restore clipboard.
 
 ## Owner
