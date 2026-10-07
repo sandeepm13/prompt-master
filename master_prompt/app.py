@@ -6,6 +6,7 @@ Threads (so the app never freezes):
   * "hotkeys" thread ... waits for Windows to tell us a shortcut was pressed.
   * worker threads ..... grabbing text, calling the AI, pasting (they sleep/wait a lot).
   * tray thread ........ the tray icon menu.
+  * auto prompt .......... a floating dot. A click asks before any text is read.
 Other threads never touch the UI directly; they put a message in self.events,
 and the main thread reads it every 40 ms.
 """
@@ -21,15 +22,22 @@ import time
 import tkinter as tk
 
 from . import capture, history, llm, winapi
-from .config import CONFIG_PATH, DATA_DIR, ConfigError, Settings, load_settings, save_provider_keys
+from .config import (
+    CONFIG_PATH, DATA_DIR, ConfigError, Settings, ensure_config_file, load_settings,
+    save_provider_keys, set_auto_prompt,
+)
 from .hotkeys import HotkeyError, HotkeyListener, parse_hotkey
 from .prompts import all_styles
 from .tray import Tray
-from .ui import KeySetupWindow, PreviewPopup, Toast
+from .ui import (
+    ConfirmPopup, FloatDot, KeySetupWindow, PreviewPopup, Toast,
+    default_dot_origin, load_dot_position, save_dot_position,
+)
 
 log = logging.getLogger(__name__)
 HISTORY_PATH = DATA_DIR / "history.jsonl"
 LOG_PATH = DATA_DIR / "master-prompt.log"
+DOT_PATH = DATA_DIR / "float-dot.json"
 # Tried in order when the main hotkey is already taken by another app on this PC.
 FALLBACK_HOTKEYS = ["win+alt+p", "ctrl+alt+p"]
 
@@ -46,10 +54,15 @@ class App:
         self.root.withdraw()  # the main window stays hidden; we only use popups
         self.toast = Toast(self.root)
         self.popup: PreviewPopup | None = None
+        self.confirm: ConfirmPopup | None = None
+        self.dot: FloatDot | None = None
+        self._pending = None  # focused agent box held for Yes; text is not read here
+        self._capture_uia = None
         self.key_window: KeySetupWindow | None = None
         self.hotkey_text = settings.hotkey_enhance  # the one really registered (may be a fallback)
         self.listener: HotkeyListener | None = None
         self.tray: Tray | None = None
+        self.watcher = None
 
         self.job = 0                       # increases each request; old answers are ignored
         self.busy = False
@@ -61,18 +74,22 @@ class App:
     # ------------------------------------------------------------------ setup
     def run(self) -> None:
         self._build_popup()
+        self._build_confirm()
+        self._build_dot()
         self._start_hotkeys()
         self.tray = Tray(_pretty(self.hotkey_text), {
             "enhance_clipboard": lambda: self._post("hotkey", "enhance_clipboard"),
             "toggle_preview": lambda: self._post("toggle_preview"),
+            "toggle_auto_prompt": lambda: self._post("toggle_auto_prompt"),
             "api_keys": lambda: self._post("open_keys"),
             "open_config": lambda: self._open(CONFIG_PATH),
             "open_history": lambda: self._open(HISTORY_PATH),
             "open_log": lambda: self._open(LOG_PATH),
             "reload": lambda: self._post("reload"),
             "quit": lambda: self._post("quit"),
-        }, is_preview_on=lambda: self.settings.preview)
+        }, is_preview_on=lambda: self.settings.preview, is_auto_prompt_on=lambda: self.settings.auto_prompt)
         self.tray.start()
+        self._sync_watcher()
 
         if not self.settings.usable_providers:
             self._on_open_keys()
@@ -94,6 +111,12 @@ class App:
             self.style = "enhance"
         self.popup = PreviewPopup(self.root, self.styles, on_accept=self._accept, on_cancel=self._cancel,
                                   on_regenerate=self._regenerate, on_copy=self._copy)
+
+    def _build_confirm(self) -> None:
+        self.confirm = ConfirmPopup(self.root, on_yes=self._on_auto_yes, on_no=self._on_auto_no)
+
+    def _build_dot(self) -> None:
+        self.dot = FloatDot(self.root, on_click=self._on_dot_click, on_place=self._save_dot)
 
     def _start_hotkeys(self) -> None:
         if self.listener:
@@ -215,6 +238,7 @@ class App:
         if job != self.job:
             return
         self.busy = False
+        self._close_capture_uia()
         log.warning("Shown to user: %s", message)  # so the log explains failures, not just the toast
         self.toast.show(message, kind="error", duration_ms=6000)
 
@@ -273,6 +297,159 @@ class App:
         self.settings.preview = not self.settings.preview
         self.toast.show(f"Preview {'ON' if self.settings.preview else 'OFF (pastes directly)'}", duration_ms=1800)
 
+    def _on_toggle_auto_prompt(self) -> None:
+        enabled = not self.settings.auto_prompt
+        try:
+            path = ensure_config_file()
+            text = path.read_text(encoding="utf-8")
+            path.write_text(set_auto_prompt(text, enabled), encoding="utf-8")
+        except (ConfigError, OSError) as e:
+            self.toast.show(f"Couldn't save Auto prompt: {e}", kind="error", duration_ms=6000)
+            return
+        self.settings.auto_prompt = enabled
+        self._sync_watcher()
+        if enabled:
+            self.toast.show("Auto prompt ON. Click the dot when your prompt is ready.", duration_ms=2600)
+        else:
+            self.toast.show("Auto prompt OFF", duration_ms=1800)
+
+    def _sync_watcher(self) -> None:
+        self._stop_watcher()
+        if not self.settings.auto_prompt:
+            self._hide_dot()
+            return
+        self._show_dot()
+
+    def _show_dot(self) -> None:
+        if self.dot is None:
+            return
+        saved = load_dot_position(DOT_PATH)
+        if saved is None:
+            area = winapi.work_area_at(0, 0)
+            saved = default_dot_origin(area, FloatDot.SIZE, FloatDot.SIZE)
+        self.dot.show(*saved)
+
+    def _hide_dot(self) -> None:
+        if self.confirm:
+            self.confirm.hide()
+        self._drop_pending()
+        if self.dot:
+            self.dot.hide()
+
+    def _save_dot(self, x: int, y: int) -> None:
+        try:
+            save_dot_position(DOT_PATH, x, y)
+        except OSError:
+            log.exception("Couldn't save the dot position")
+
+    def _on_dot_click(self) -> None:
+        from .watch import capture_focused_agent
+
+        if self.busy:
+            self.toast.show("Still enhancing the previous prompt.", duration_ms=2000)
+            return
+        self._drop_pending()
+        element, labels, kind, uia = capture_focused_agent()
+        if element:
+            self._pending = (element, labels, kind, uia)
+        elif uia is not None:
+            uia.close()
+        if self.confirm and self.dot:
+            self.confirm.show_beside(*self.dot.bounds())
+
+    def _stop_watcher(self) -> None:
+        if self.watcher:
+            self.watcher.stop()
+            self.watcher = None
+
+    def _drop_pending(self) -> None:
+        pending = self._pending
+        self._pending = None
+        if not pending or not pending[0]:
+            return
+        from .watch import _release
+
+        _release(pending[0])
+        if pending[3] is not None:
+            pending[3].close()
+
+    def _take_pending(self):
+        pending = self._pending
+        self._pending = None
+        if not pending:
+            return None, None, ""
+        self._capture_uia = pending[3]
+        return pending[0], pending[1], pending[2]
+
+    def _close_capture_uia(self) -> None:
+        uia = self._capture_uia
+        self._capture_uia = None
+        if uia is not None:
+            uia.close()
+
+    def _on_auto_yes(self) -> None:
+        if self.confirm:
+            self.confirm.hide()
+        if self.busy:
+            self._drop_pending()
+            return
+        element, labels, kind = self._take_pending()
+        if not element or labels is None or not kind:
+            from .watch import _release
+
+            _release(element)
+            self.toast.show("Couldn't find the prompt box. Click inside the agent box, then the dot.",
+                            kind="error", duration_ms=4000)
+            return
+        self.busy = True
+        self.busy_since = time.monotonic()
+        self.job += 1
+        self.toast.show("✨ Enhancing your prompt…", duration_ms=0)
+        self._thread(self._auto_worker, self.job, element, labels, kind)
+
+    def _auto_worker(self, job: int, element, labels, kind: str) -> None:
+        from .agent_text import AgentTextError, read_agent_text, write_agent_text
+        from .watch import COINIT_MULTITHREADED, _release, ole32
+
+        ole32.CoInitializeEx(None, COINIT_MULTITHREADED)
+        try:
+            text = read_agent_text(element, labels, kind)
+            res = llm.enhance(text, self.settings.providers, style=self.style,
+                              custom_styles=self.settings.custom_styles,
+                              timeout=self.settings.timeout_seconds)
+            how = write_agent_text(element, labels, kind, res.text)
+            log.info("Auto prompt %s", how)
+            if how == "copied":
+                winapi.set_clipboard_text(res.text)
+            self._post("auto_done", job, how, res)
+        except AgentTextError as e:
+            self._post("fail", job, str(e))
+        except llm.LLMError as e:
+            self._post("fail", job, str(e))
+        except Exception as e:
+            log.exception("auto prompt failed")
+            self._post("fail", job, f"Couldn't rewrite the prompt: {e}")
+        finally:
+            _release(element)
+            ole32.CoUninitialize()
+
+    def _on_auto_done(self, job: int, how: str, res: llm.Result) -> None:
+        if job != self.job:
+            return
+        self.busy = False
+        self._close_capture_uia()
+        self.last_result = res
+        self.toast.hide()
+        if how == "copied":
+            self.toast.show("✓ Improved prompt copied — press Ctrl+V to paste it.", kind="ok", duration_ms=4000)
+        else:
+            self.toast.show("✓ Prompt improved", kind="ok", duration_ms=1800)
+
+    def _on_auto_no(self) -> None:
+        if self.confirm:
+            self.confirm.hide()
+        self._drop_pending()
+
     def _on_reload(self) -> None:
         try:
             new = load_settings()
@@ -283,6 +460,7 @@ class App:
         self.style = new.default_style
         self._build_popup()
         self._start_hotkeys()
+        self._sync_watcher()
         n = len(new.usable_providers)
         self.toast.show(f"Config reloaded · {n} provider(s) ready", kind="ok" if n else "error")
 
@@ -359,6 +537,8 @@ class App:
             self._post("fail", self.job, f"Couldn't open {path}: {e}")
 
     def _shutdown(self) -> None:
+        self._hide_dot()
+        self._stop_watcher()
         if self.listener:
             self.listener.stop()
         if self.tray:

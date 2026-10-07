@@ -80,6 +80,8 @@ class Settings:
     timeout_seconds: float = 30.0
     paste_restore_delay_ms: int = 600
     save_history: bool = True
+    auto_prompt: bool = True
+    auto_prompt_idle_seconds: float = 3.0
     providers: list[Provider] = field(default_factory=list)
     blocked_apps: list[str] = field(default_factory=list)
     custom_styles: dict[str, dict] = field(default_factory=dict)
@@ -146,6 +148,40 @@ def save_provider_keys(keys: dict[str, str], path: Path | None = None) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def set_auto_prompt(text: str, enabled: bool) -> str:
+    """
+    Return config.toml text with `auto_prompt = true|false` set inside [behavior].
+    Edits the text (instead of re-writing the TOML) so the user's comments survive.
+    """
+    lines = text.splitlines(keepends=True)
+    start: int | None = None
+    end: int | None = None
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if re.match(r"\[\s*behavior\s*\]\s*(?:#.*)?$", s):
+            start = i
+        elif start is not None and s.startswith("["):
+            end = i
+            break
+    if start is None:
+        raise ConfigError("config.toml has no [behavior] table.")
+    if end is None:
+        end = len(lines)
+    value = "true" if enabled else "false"
+    for i in range(start + 1, end):
+        if re.match(r"\s*auto_prompt\s*=", lines[i]):
+            comment = ""
+            match = re.search(r"(\s+#.*)$", lines[i].rstrip("\r\n"))
+            if match:
+                comment = match.group(1)
+            ending = "\n" if lines[i].endswith("\n") else ""
+            lines[i] = f"auto_prompt = {value}{comment}{ending}"
+            break
+    else:
+        lines.insert(end, f"auto_prompt = {value}\n")
+    return "".join(lines)
+
+
 def parse_settings(data: dict) -> Settings:
     s = Settings()
     hk = data.get("hotkeys", {})
@@ -160,6 +196,9 @@ def parse_settings(data: dict) -> Settings:
     s.timeout_seconds = float(b.get("timeout_seconds", s.timeout_seconds))
     s.paste_restore_delay_ms = int(b.get("paste_restore_delay_ms", s.paste_restore_delay_ms))
     s.save_history = bool(b.get("save_history", s.save_history))
+    s.auto_prompt = bool(b.get("auto_prompt", s.auto_prompt))
+    idle = float(b.get("auto_prompt_idle_seconds", s.auto_prompt_idle_seconds))
+    s.auto_prompt_idle_seconds = idle if idle >= 1 else 1.0
 
     providers = data.get("providers", [])
     if not isinstance(providers, list):

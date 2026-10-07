@@ -20,6 +20,8 @@ default_style = "enhance"   # enhance | coding | concise | detailed | (your own 
 timeout_seconds = 30        # per provider
 paste_restore_delay_ms = 600
 save_history = true         # keeps before/after pairs in data/history.jsonl
+auto_prompt = true          # true = ask "Generate the prompt?" after a pause in an LLM or agent box
+auto_prompt_idle_seconds = 3
 
 # ---------------------------------------------------------------------
 #  AI providers - tried top to bottom. If one fails (limit reached,

@@ -25,7 +25,7 @@ def make_icon_image(size: int = 64):
 
 class Tray:
     def __init__(self, hotkey_text: str, actions: dict[str, Callable[[], None]],
-                 is_preview_on: Callable[[], bool]):
+                 is_preview_on: Callable[[], bool], is_auto_prompt_on: Callable[[], bool]):
         self.icon = None
         try:
             import pystray
@@ -42,6 +42,8 @@ class Tray:
             pystray.MenuItem("Enhance clipboard text", act("enhance_clipboard"), default=True),
             pystray.MenuItem("Show preview before pasting", act("toggle_preview"),
                              checked=lambda item: is_preview_on()),
+            pystray.MenuItem("Auto prompt", act("toggle_auto_prompt"),
+                             checked=lambda item: is_auto_prompt_on()),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("API keys…", act("api_keys")),
             pystray.MenuItem("Open config", act("open_config")),

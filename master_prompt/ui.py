@@ -6,9 +6,11 @@ All functions here must be called from the main (tkinter) thread.
 """
 from __future__ import annotations
 
+import json
 import sys
 import tkinter as tk
 import webbrowser
+from pathlib import Path
 from tkinter import ttk
 from typing import Callable
 
@@ -36,6 +38,12 @@ def _cursor_and_area(root: tk.Misc) -> tuple[int, int, tuple[int, int, int, int]
         return x, y, winapi.work_area_at(x, y)
     x, y = root.winfo_pointerxy()
     return x, y, (0, 0, root.winfo_screenwidth(), root.winfo_screenheight())
+
+
+def _work_area(win: tk.Misc, x: int, y: int) -> tuple[int, int, int, int]:
+    if IS_WINDOWS:
+        return winapi.work_area_at(x, y)
+    return 0, 0, win.winfo_screenwidth(), win.winfo_screenheight()
 
 
 def _place_near_cursor(win: tk.Toplevel, width: int, height: int, offset: int = 18) -> None:
@@ -279,6 +287,197 @@ class PreviewPopup:
             self._set_text(self._result)
             self.btn_orig.configure(text="Original")
             self._showing_original = False
+
+
+class ConfirmPopup:
+    """
+    Asks "Generate the prompt?" near the cursor.
+    Yes calls on_yes. No and Escape call on_no.
+    This window never reads the clipboard, the focused control, or any file.
+    """
+
+    def __init__(self, root: tk.Tk, *, on_yes: Callable[[], None], on_no: Callable[[], None]):
+        self.on_yes = on_yes
+        self.on_no = on_no
+        w = self.win = tk.Toplevel(root)
+        w.withdraw()
+        w.title("Master Prompt")
+        w.configure(bg=BG)
+        w.resizable(False, False)
+        w.attributes("-topmost", True)
+        if IS_WINDOWS:
+            w.attributes("-toolwindow", True)
+        w.protocol("WM_DELETE_WINDOW", self._no)
+
+        tk.Label(w, text="Generate the prompt?", bg=BG, fg=FG, font=FONT_TITLE).pack(
+            anchor="w", padx=16, pady=(14, 10))
+        bottom = tk.Frame(w, bg=BG)
+        bottom.pack(fill="x", padx=16, pady=(0, 14))
+        _Button(bottom, "Yes", self._yes, primary=True).pack(side="right")
+        _Button(bottom, "No", self._no).pack(side="right", padx=(0, 8))
+        w.bind("<Escape>", lambda e: self._no())
+
+    def show(self) -> None:
+        self.win.update_idletasks()
+        width, height = self._size()
+        _place_near_cursor(self.win, width, height)
+        self._present()
+
+    def show_beside(self, x: int, y: int, anchor_w: int, anchor_h: int) -> None:
+        """Open beside the floating dot. This window does not read any text."""
+        self.win.update_idletasks()
+        width, height = self._size()
+        left, top, right, bottom = _work_area(self.win, x, y)
+        px = x - width - 10
+        if px < left + 8:
+            px = x + anchor_w + 10
+        py = y + (anchor_h - height) // 2
+        px = min(max(px, left + 8), max(left + 8, right - width - 8))
+        py = min(max(py, top + 8), max(top + 8, bottom - height - 8))
+        self.win.geometry(f"{width}x{height}+{px}+{py}")
+        self._present()
+
+    def _size(self) -> tuple[int, int]:
+        scale = max(1.0, self.win.winfo_fpixels("1i") / 96)
+        width = max(self.win.winfo_reqwidth(), int(240 * scale))
+        height = max(self.win.winfo_reqheight(), int(84 * scale))
+        return width, height
+
+    def _present(self) -> None:
+        self.win.deiconify()
+        self.win.lift()
+        self.win.attributes("-topmost", True)
+        self.win.focus_force()
+
+    def hide(self) -> None:
+        self.win.withdraw()
+
+    def _yes(self) -> None:
+        self.on_yes()
+
+    def _no(self) -> None:
+        self.on_no()
+
+
+DRAG_THRESHOLD = 4
+_DOT_MARGIN = 18
+
+
+def pointer_action(dx: int, dy: int) -> str:
+    """A short press is a click. A longer move is a drag."""
+    if abs(dx) <= DRAG_THRESHOLD and abs(dy) <= DRAG_THRESHOLD:
+        return "click"
+    return "drag"
+
+
+def clamp_point(x: int, y: int, width: int, height: int, area: tuple[int, int, int, int]) -> tuple[int, int]:
+    left, top, right, bottom = area
+    return (
+        min(max(x, left), max(left, right - width)),
+        min(max(y, top), max(top, bottom - height)),
+    )
+
+
+def default_dot_origin(area: tuple[int, int, int, int], width: int, height: int) -> tuple[int, int]:
+    left, top, right, bottom = area
+    x = right - width - _DOT_MARGIN
+    y = top + max(0, bottom - top - height) // 2
+    return clamp_point(x, y, width, height, area)
+
+
+def load_dot_position(path: Path) -> tuple[int, int] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return int(data["x"]), int(data["y"])
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return None
+
+
+def save_dot_position(path: Path, x: int, y: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"x": int(x), "y": int(y)}), encoding="utf-8")
+
+
+class FloatDot:
+    """A small always-on-top dot. Drag moves it. A click calls on_click. It never reads text."""
+
+    SIZE = 32
+    _CHROMA = "#010101"
+
+    def __init__(self, root: tk.Tk, *, on_click: Callable[[], None], on_place: Callable[[int, int], None]):
+        self.on_click = on_click
+        self.on_place = on_place
+        self._press: tuple[int, int] | None = None
+        self._origin: tuple[int, int] = (0, 0)
+        w = self.win = tk.Toplevel(root)
+        w.withdraw()
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        w.configure(bg=self._CHROMA)
+        if IS_WINDOWS:
+            w.attributes("-transparentcolor", self._CHROMA)
+        canvas = tk.Canvas(w, width=self.SIZE, height=self.SIZE, bg=self._CHROMA,
+                           highlightthickness=0, bd=0, cursor="hand2")
+        canvas.pack()
+        canvas.create_oval(2, 2, self.SIZE - 2, self.SIZE - 2, fill=ACCENT, outline="")
+        canvas.create_oval(11, 11, self.SIZE - 11, self.SIZE - 11, fill="#ffffff", outline="")
+        self._canvas = canvas
+        for target in (w, canvas):
+            target.bind("<ButtonPress-1>", self._down)
+            target.bind("<B1-Motion>", self._motion)
+            target.bind("<ButtonRelease-1>", self._up)
+
+    def show(self, x: int, y: int) -> None:
+        area = _work_area(self.win, x, y)
+        x, y = clamp_point(x, y, self.SIZE, self.SIZE, area)
+        self.win.geometry(f"{self.SIZE}x{self.SIZE}+{x}+{y}")
+        self.win.deiconify()
+        self.win.lift()
+        self.win.attributes("-topmost", True)
+        if IS_WINDOWS:
+            self.win.update_idletasks()
+            try:
+                winapi.make_no_activate(int(self.win.wm_frame(), 16))
+            except Exception:
+                pass
+
+    def hide(self) -> None:
+        self._press = None
+        self.win.withdraw()
+
+    def bounds(self) -> tuple[int, int, int, int]:
+        return self.win.winfo_x(), self.win.winfo_y(), self.SIZE, self.SIZE
+
+    def _down(self, event) -> None:
+        self._press = (event.x_root, event.y_root)
+        self._origin = (self.win.winfo_x(), self.win.winfo_y())
+
+    def _motion(self, event) -> None:
+        if self._press is None:
+            return
+        dx = event.x_root - self._press[0]
+        dy = event.y_root - self._press[1]
+        if pointer_action(dx, dy) != "drag":
+            return
+        nx = self._origin[0] + dx
+        ny = self._origin[1] + dy
+        area = _work_area(self.win, nx, ny)
+        x, y = clamp_point(nx, ny, self.SIZE, self.SIZE, area)
+        self.win.geometry(f"+{x}+{y}")
+        self._canvas.configure(cursor="fleur")
+
+    def _up(self, event) -> None:
+        if self._press is None:
+            return
+        dx = event.x_root - self._press[0]
+        dy = event.y_root - self._press[1]
+        self._press = None
+        self._canvas.configure(cursor="hand2")
+        if pointer_action(dx, dy) == "click":
+            self.on_click()
+            return
+        x, y = self.win.winfo_x(), self.win.winfo_y()
+        self.on_place(x, y)
 
 
 class KeySetupWindow:

@@ -7,10 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from master_prompt.config import ConfigError, Provider, parse_settings, set_provider_key
+from master_prompt.agent_text import AgentTextError, clipboard_to_keep, read_agent_text, write_agent_text
+from master_prompt.config import ConfigError, Provider, parse_settings, set_auto_prompt, set_provider_key
+from master_prompt.ui import clamp_point, default_dot_origin, load_dot_position, pointer_action, save_dot_position
+from master_prompt.focus_kind import FocusLabels, classify_focus
+from master_prompt.idle import IdleTimer
 from master_prompt.hotkeys import MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, HotkeyError, parse_hotkey
 from master_prompt.llm import LLMError, enhance
 from master_prompt.prompts import all_styles, build_messages, clean_output
+from master_prompt.targets import classify_window
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -35,8 +40,10 @@ def test_parse_hotkey_bad(bad):
 def test_example_config_parses():
     with open(ROOT / "config.example.toml", "rb") as f:
         s = parse_settings(tomllib.load(f))
-    assert s.hotkey_enhance == "win+shift+p"
+    assert s.hotkey_enhance == "ctrl+alt+p"
     assert s.preview is True
+    assert s.auto_prompt is True
+    assert s.auto_prompt_idle_seconds == 3
     assert [p.name for p in s.providers] == ["groq", "gemini"]
     assert "windowsterminal.exe" in s.blocked_apps
     parse_hotkey(s.hotkey_enhance)
@@ -71,12 +78,253 @@ def test_set_provider_key_adds_missing_line_and_rejects_bad_input():
         set_provider_key(text, "groq", 'bad"key')
 
 
+def test_auto_prompt_idle_seconds_below_one_becomes_one():
+    s = parse_settings({"behavior": {"auto_prompt_idle_seconds": 0}})
+    assert s.auto_prompt_idle_seconds == 1
+
+
+def test_set_auto_prompt_toggles_without_dropping_comments():
+    text = (ROOT / "config.example.toml").read_text(encoding="utf-8")
+    on = set_auto_prompt(text, True)
+    assert parse_settings(tomllib.loads(on)).auto_prompt is True
+    assert "#  Free keys:" in on and "ask \"Generate the prompt?\"" in on
+    assert on.count("\n") == text.count("\n")
+    off = set_auto_prompt(on, False)
+    assert parse_settings(tomllib.loads(off)).auto_prompt is False
+    assert "#  Free keys:" in off and "ask \"Generate the prompt?\"" in off
+    assert off.count("\n") == on.count("\n")
+    assert off.count("auto_prompt = false") == 1
+
+
 def test_disabled_provider_skipped():
     s = parse_settings({"providers": [
         {"name": "a", "base_url": "u", "model": "m", "enabled": False},
         {"name": "b", "base_url": "u/", "model": "m"},
     ]})
     assert [p.name for p in s.providers] == ["b"] and s.providers[0].base_url == "u"
+
+
+# --------------------------------------------------------------- windows
+def test_classify_window_cursor_is_ide():
+    assert classify_window("Cursor.exe", "prompt-master - Cursor") == "ide"
+    assert classify_window("cursor.exe", "prompt-master - Cursor") == "ide"
+
+
+def test_classify_window_chatgpt_chrome_tab_is_llm():
+    assert classify_window("chrome.exe", "ChatGPT - Google Chrome") == "llm"
+
+
+def test_classify_window_gmail_chrome_tab_is_ignore():
+    assert classify_window("chrome.exe", "Gmail - Google Chrome") == "ignore"
+
+
+def test_classify_window_windows_terminal_is_ignore():
+    assert classify_window("WindowsTerminal.exe", "Windows PowerShell") == "ignore"
+
+
+def test_classify_window_claude_exe_is_llm():
+    assert classify_window("Claude.exe", "Claude") == "llm"
+
+
+def test_classify_window_windsurf_is_ide():
+    assert classify_window("Windsurf.exe", "Windsurf") == "ide"
+
+
+def test_classify_window_perplexity_edge_tab_is_llm():
+    assert classify_window("msedge.exe", "Perplexity - Microsoft Edge") == "llm"
+
+
+def test_classify_window_lovable_chrome_tab_is_llm():
+    assert classify_window("chrome.exe", "Lovable - Google Chrome") == "llm"
+
+
+# ----------------------------------------------------------------- focus
+def test_classify_focus_cursor_file_tab_is_editor():
+    labels = FocusLabels("TabItem", "focus_kind.py", ("Editor Group",))
+    assert classify_focus(labels, "ide") == "editor"
+
+
+def test_classify_focus_cursor_composer_is_agent():
+    labels = FocusLabels("Edit", "Composer", ())
+    assert classify_focus(labels, "ide") == "agent"
+
+
+def test_classify_focus_editor_overrides_chat():
+    labels = FocusLabels("Edit", "chat input", ("editor",))
+    assert classify_focus(labels, "ide") == "editor"
+
+
+def test_classify_focus_blank_ide_control_is_unknown():
+    assert classify_focus(FocusLabels("", "", ()), "ide") == "unknown"
+
+
+def test_classify_focus_chatgpt_text_box_is_agent():
+    assert classify_focus(FocusLabels("Edit", "Message ChatGPT", ()), "llm") == "agent"
+
+
+def test_classify_focus_gmail_ignore_is_unknown():
+    assert classify_focus(FocusLabels("Edit", "compose", ()), "ignore") == "unknown"
+
+
+def test_classify_focus_open_markdown_file_does_not_hide_agent_box():
+    title = "auto-prompt.mdc - prompt-master - Cursor"
+    assert classify_focus(FocusLabels("Edit", "", (title,)), "ide") == "agent"
+    assert classify_focus(FocusLabels("TabItem", "auto-prompt.mdc", ()), "ide") == "unknown"
+    assert classify_focus(FocusLabels("TabItem", "notes.md", ()), "ide") == "editor"
+
+
+def test_classify_focus_open_source_file_title_does_not_hide_agent_box():
+    title = "llm.py - prompt-master - Cursor"
+    assert classify_focus(FocusLabels("Edit", "", (title, title, "Desktop 1")), "ide") == "agent"
+    assert classify_focus(FocusLabels("TabItem", "llm.py", (title,)), "ide") == "editor"
+    editor = "The editor is not accessible at this time."
+    assert classify_focus(FocusLabels("Edit", editor, (title,)), "ide") == "editor"
+
+
+def test_classify_focus_project_title_is_not_the_agent_box():
+    title = ".gitignore - prompt-master - Cursor"
+    assert classify_focus(FocusLabels("Tree", "Files Explorer", (title,)), "ide") == "unknown"
+    assert classify_focus(FocusLabels("Text", "read_agent_text", ()), "ide") == "unknown"
+    assert classify_focus(FocusLabels("Edit", "", (title,)), "ide") == "agent"
+    editor = "The editor is not accessible at this time."
+    assert classify_focus(FocusLabels("Edit", editor, (title,)), "ide") == "editor"
+
+
+def test_read_agent_text_does_not_call_reader_for_editor_or_unknown():
+    calls = []
+
+    def reader(element):
+        calls.append(element)
+        return "rewrite me"
+
+    editor = FocusLabels("TabItem", "main.py", ("Editor Group",))
+    unknown = FocusLabels("Button", "OK", ())
+    with pytest.raises(AgentTextError):
+        read_agent_text("box", editor, "ide", reader=reader)
+    with pytest.raises(AgentTextError):
+        read_agent_text("box", unknown, "ide", reader=reader)
+    assert calls == []
+    assert read_agent_text("box", FocusLabels("Edit", "Composer", ()), "ide", reader=reader) == "rewrite me"
+    assert calls == ["box"]
+    with pytest.raises(AgentTextError, match="Nothing to rewrite."):
+        read_agent_text("box", FocusLabels("Edit", "Composer", ()), "ide", reader=lambda element: "  ")
+
+
+def test_write_agent_text_sends_no_keys_unless_still_agent():
+    keys = []
+
+    def send_keys(text):
+        keys.append(text)
+        return True
+
+    editor = FocusLabels("TabItem", "main.py", ("Editor Group",))
+    assert write_agent_text("el", editor, "ide", "new prompt", send_keys=send_keys) == "copied"
+    assert write_agent_text(
+        "el",
+        FocusLabels("Edit", "Composer", ()),
+        "ide",
+        "new prompt",
+        set_value=lambda element, text: False,
+        refresh=lambda element: FocusLabels("Edit", "app.py", ("editor",)),
+        send_keys=send_keys,
+    ) == "copied"
+    assert keys == []
+
+
+def test_write_ide_agent_box_pastes_its_own_text_and_never_uses_ctrl_a():
+    keys = []
+    selected = []
+
+    def send_keys(text):
+        keys.append(text)
+        return True
+
+    def select_text(element):
+        selected.append(element)
+        return True
+
+    agent = FocusLabels("Edit", "", ("llm.py - prompt-master - Cursor",))
+    assert write_agent_text(
+        "el",
+        agent,
+        "ide",
+        "new prompt",
+        set_value=lambda element, text: False,
+        refresh=lambda element: agent,
+        select_text=select_text,
+        send_keys=send_keys,
+    ) == "written"
+    assert selected == ["el"]
+    assert keys == ["new prompt"]
+
+    keys.clear()
+    assert write_agent_text(
+        "el",
+        agent,
+        "ide",
+        "new prompt",
+        set_value=lambda element, text: False,
+        refresh=lambda element: agent,
+        select_text=lambda element: False,
+        send_keys=send_keys,
+    ) == "copied"
+    assert keys == []
+
+
+def test_paste_clears_the_original_prompt_and_the_generated_prompt():
+    assert clipboard_to_keep("fix the login", "fix the login", "Rewrite the login flow.") is None
+    assert clipboard_to_keep("Rewrite the login flow.", "fix the login", "Rewrite the login flow.") is None
+    assert clipboard_to_keep(None, "fix the login", "Rewrite the login flow.") is None
+    assert clipboard_to_keep("https://example.com", "fix the login", "Rewrite the login flow.") == "https://example.com"
+
+
+def test_dot_click_is_a_short_press_and_a_drag_moves_it():
+    assert pointer_action(0, 0) == "click"
+    assert pointer_action(4, -4) == "click"
+    assert pointer_action(5, 0) == "drag"
+
+
+def test_dot_starts_on_the_right_and_stays_on_screen():
+    assert default_dot_origin((0, 0, 1000, 800), 32, 32) == (950, 384)
+    assert clamp_point(-20, 900, 32, 32, (0, 0, 800, 600)) == (0, 568)
+
+
+def test_dot_position_round_trip(tmp_path):
+    path = tmp_path / "float-dot.json"
+    assert load_dot_position(path) is None
+    save_dot_position(path, 120, 340)
+    assert load_dot_position(path) == (120, 340)
+    path.write_text("nope", encoding="utf-8")
+    assert load_dot_position(path) is None
+
+
+# ------------------------------------------------------------------- idle
+def test_idle_timer_fires_once_then_waits_for_another_key():
+    timer = IdleTimer(3)
+    timer.enabled = True
+    timer.note_activity(0)
+    assert timer.poll(2.9) is False
+    assert timer.poll(3.0) is True
+    assert timer.poll(6) is False
+    timer.note_activity(6)
+    assert timer.poll(8.9) is False
+    assert timer.poll(9.0) is True
+
+
+def test_idle_timer_disabled_never_fires():
+    timer = IdleTimer(3)
+    timer.note_activity(0)
+    assert timer.enabled is False
+    assert timer.poll(3.0) is False
+    assert timer.poll(6) is False
+
+
+def test_idle_timer_seconds_below_one_become_one():
+    timer = IdleTimer(0)
+    timer.enabled = True
+    timer.note_activity(0)
+    assert timer.poll(0.9) is False
+    assert timer.poll(1.0) is True
 
 
 # ---------------------------------------------------------------- prompts
