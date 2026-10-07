@@ -26,14 +26,10 @@ def setup_logging(console: bool) -> None:
 
 def cmd_check() -> int:
     from .config import CONFIG_PATH, load_settings
-    from .hotkeys import parse_hotkey
 
     s = load_settings()
     print(f"Config file : {CONFIG_PATH}")
-    print(f"Hotkey      : {s.hotkey_enhance}  -> OK ({parse_hotkey(s.hotkey_enhance)})")
-    if s.hotkey_enhance_clipboard:
-        print(f"Clip hotkey : {s.hotkey_enhance_clipboard}  -> OK")
-    print(f"Preview     : {s.preview}")
+    print(f"Auto prompt : {s.auto_prompt}")
     print("Providers (tried in this order):")
     for p in s.providers:
         state = "ready" if p.usable else f"NO KEY (set api_key or env var {p.api_key_env})"

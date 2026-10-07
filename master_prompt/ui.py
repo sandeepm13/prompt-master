@@ -347,7 +347,12 @@ class ConfirmPopup:
         self.win.deiconify()
         self.win.lift()
         self.win.attributes("-topmost", True)
-        self.win.focus_force()
+        if IS_WINDOWS:
+            self.win.update_idletasks()
+            try:
+                winapi.pin_overlay(int(self.win.wm_frame(), 16))
+            except Exception:
+                pass
 
     def hide(self) -> None:
         self.win.withdraw()
@@ -409,6 +414,8 @@ class FloatDot:
         self.on_place = on_place
         self._press: tuple[int, int] | None = None
         self._origin: tuple[int, int] = (0, 0)
+        self._visible = False
+        self._pin_job: str | None = None
         w = self.win = tk.Toplevel(root)
         w.withdraw()
         w.overrideredirect(True)
@@ -431,19 +438,44 @@ class FloatDot:
         area = _work_area(self.win, x, y)
         x, y = clamp_point(x, y, self.SIZE, self.SIZE, area)
         self.win.geometry(f"{self.SIZE}x{self.SIZE}+{x}+{y}")
+        self._visible = True
         self.win.deiconify()
         self.win.lift()
         self.win.attributes("-topmost", True)
-        if IS_WINDOWS:
-            self.win.update_idletasks()
-            try:
-                winapi.make_no_activate(int(self.win.wm_frame(), 16))
-            except Exception:
-                pass
+        self._pin()
+        self._schedule_pin()
 
     def hide(self) -> None:
+        self._visible = False
         self._press = None
+        if self._pin_job is not None:
+            self.win.after_cancel(self._pin_job)
+            self._pin_job = None
         self.win.withdraw()
+
+    def _schedule_pin(self) -> None:
+        if not self._visible:
+            return
+        self._pin_job = self.win.after(400, self._keep_visible)
+
+    def _keep_visible(self) -> None:
+        self._pin_job = None
+        if not self._visible:
+            return
+        if not self.win.winfo_viewable():
+            self.win.deiconify()
+        self.win.attributes("-topmost", True)
+        self._pin()
+        self._schedule_pin()
+
+    def _pin(self) -> None:
+        if not IS_WINDOWS:
+            return
+        self.win.update_idletasks()
+        try:
+            winapi.pin_overlay(int(self.win.wm_frame(), 16))
+        except Exception:
+            pass
 
     def bounds(self) -> tuple[int, int, int, int]:
         return self.win.winfo_x(), self.win.winfo_y(), self.SIZE, self.SIZE
@@ -491,7 +523,7 @@ class KeySetupWindow:
         ("gemini", "Gemini API key (optional backup)", "https://aistudio.google.com/apikey"),
     ]
 
-    def __init__(self, root: tk.Tk, hotkey_text: str, on_submit: Callable[[dict[str, str]], None],
+    def __init__(self, root: tk.Tk, on_submit: Callable[[dict[str, str]], None],
                  on_close: Callable[[], None]):
         self.root = root
         self.on_submit, self.on_close = on_submit, on_close
@@ -505,7 +537,7 @@ class KeySetupWindow:
 
         tk.Label(w, text="✨ Welcome to Master Prompt", bg=BG, fg=FG, font=("Segoe UI Semibold", 13)
                  ).pack(anchor="w", padx=20, pady=(18, 4))
-        tk.Label(w, text=f"Click in any text box and press {hotkey_text} - your text becomes a better AI prompt.\n"
+        tk.Label(w, text="Click the dot, then Yes. The draft in the focused box becomes a better prompt.\n"
                          "It uses a free AI service. Paste your own free key below (takes 1 minute to get).",
                  bg=BG, fg=FG_DIM, font=FONT, justify="left").pack(anchor="w", padx=20)
 

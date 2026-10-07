@@ -379,10 +379,49 @@ class AutoWatcher:
         _release(element)
 
 
+UIA_VALUE_PATTERN = 10002
+UIA_TEXT_PATTERN = 10014
+_PATTERN_CONTROLS = frozenset({"edit", "document", "combobox", "group", "custom", "pane", "text"})
+
+
+def _supports_text(element) -> bool:
+    """True when this control can hold typed text. The text itself is not read."""
+    for pattern_id in (UIA_VALUE_PATTERN, UIA_TEXT_PATTERN):
+        pattern = ctypes.c_void_p()
+        get_pattern = _call(element, 16, ctypes.HRESULT, [ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)])
+        hr = get_pattern(element, pattern_id, ctypes.byref(pattern))
+        if pattern:
+            _release(pattern)
+        if hr >= 0 and pattern:
+            return True
+    return False
+
+
+def _parent_element(walker, element):
+    parent = ctypes.c_void_p()
+    get_parent = _call(walker, 3, ctypes.HRESULT, [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)])
+    if get_parent(walker, element, ctypes.byref(parent)) < 0 or not parent:
+        return None
+    return parent
+
+
+def _as_input(walker, element, kind: str):
+    """Return this element when it is a text box, including a chat composer."""
+    control_type = _CONTROL_TYPE_NAMES.get(_property_int(element, UIA_CONTROL_TYPE), "")
+    name = _property_name(element, UIA_NAME)
+    ancestors = _ancestor_names(walker, element)
+    writable = control_type.casefold() in _PATTERN_CONTROLS and _supports_text(element)
+    labels = FocusLabels(control_type, name, ancestors, writable)
+    if classify_focus(labels, kind) != "agent":
+        return None
+    return labels
+
+
 def capture_focused_agent():
-    """Return the focused agent box, or nothing.
+    """Return the focused text box, or nothing.
 
     Labels only. The control's text is not read. The caller releases the element.
+    A chat composer that is not a plain Edit is accepted when it can hold text.
     """
     from . import winapi
 
@@ -399,12 +438,25 @@ def capture_focused_agent():
         if found is None:
             uia.close()
             return None, None, "", None
-        labels, element = found
-        if classify_focus(labels, kind) != "agent":
-            _release(element)
-            uia.close()
-            return None, None, "", None
-        return element, labels, kind, uia
+        _labels, element = found
+        current = element
+        for _ in range(8):
+            labels = _as_input(uia.walker, current, kind)
+            if labels is not None:
+                if current is not element:
+                    _release(element)
+                return current, labels, kind, uia
+            parent = _parent_element(uia.walker, current)
+            if current is not element:
+                _release(current)
+            if parent is None:
+                break
+            current = parent
+        if current is not None and current is not element:
+            _release(current)
+        _release(element)
+        uia.close()
+        return None, None, "", None
     except Exception:
         log.exception("Couldn't look at the focused control")
         _release(element)

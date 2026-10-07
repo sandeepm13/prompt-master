@@ -13,8 +13,8 @@ from master_prompt.ui import clamp_point, default_dot_origin, load_dot_position,
 from master_prompt.focus_kind import FocusLabels, classify_focus
 from master_prompt.idle import IdleTimer
 from master_prompt.hotkeys import MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, HotkeyError, parse_hotkey
-from master_prompt.llm import LLMError, enhance
-from master_prompt.prompts import all_styles, build_messages, clean_output
+from master_prompt.llm import LLMError, enhance, provider_for_screen
+from master_prompt.prompts import all_styles, build_messages, build_screen_messages, clean_output
 from master_prompt.targets import classify_window
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -105,89 +105,70 @@ def test_disabled_provider_skipped():
 
 
 # --------------------------------------------------------------- windows
-def test_classify_window_cursor_is_ide():
-    assert classify_window("Cursor.exe", "prompt-master - Cursor") == "ide"
-    assert classify_window("cursor.exe", "prompt-master - Cursor") == "ide"
-
-
-def test_classify_window_chatgpt_chrome_tab_is_llm():
-    assert classify_window("chrome.exe", "ChatGPT - Google Chrome") == "llm"
-
-
-def test_classify_window_gmail_chrome_tab_is_ignore():
-    assert classify_window("chrome.exe", "Gmail - Google Chrome") == "ignore"
-
-
-def test_classify_window_windows_terminal_is_ignore():
-    assert classify_window("WindowsTerminal.exe", "Windows PowerShell") == "ignore"
-
-
-def test_classify_window_claude_exe_is_llm():
-    assert classify_window("Claude.exe", "Claude") == "llm"
-
-
-def test_classify_window_windsurf_is_ide():
-    assert classify_window("Windsurf.exe", "Windsurf") == "ide"
-
-
-def test_classify_window_perplexity_edge_tab_is_llm():
-    assert classify_window("msedge.exe", "Perplexity - Microsoft Edge") == "llm"
-
-
-def test_classify_window_lovable_chrome_tab_is_llm():
-    assert classify_window("chrome.exe", "Lovable - Google Chrome") == "llm"
+def test_classify_window_is_text_for_every_app():
+    assert classify_window("Cursor.exe", "prompt-master - Cursor") == "text"
+    assert classify_window("chrome.exe", "ChatGPT - Google Chrome") == "text"
+    assert classify_window("chrome.exe", "Gmail - Google Chrome") == "text"
+    assert classify_window("WindowsTerminal.exe", "Windows PowerShell") == "text"
+    assert classify_window("notepad.exe", "Untitled - Notepad") == "text"
+    assert classify_window("WINWORD.EXE", "Document1 - Word") == "text"
+    assert classify_window("WhatsApp.exe", "WhatsApp") == "text"
+    assert classify_window("Claude.exe", "Claude") == "text"
 
 
 # ----------------------------------------------------------------- focus
-def test_classify_focus_cursor_file_tab_is_editor():
+def test_classify_focus_file_tab_is_not_a_text_box():
     labels = FocusLabels("TabItem", "focus_kind.py", ("Editor Group",))
-    assert classify_focus(labels, "ide") == "editor"
+    assert classify_focus(labels, "text") == "unknown"
 
 
 def test_classify_focus_cursor_composer_is_agent():
     labels = FocusLabels("Edit", "Composer", ())
-    assert classify_focus(labels, "ide") == "agent"
+    assert classify_focus(labels, "text") == "agent"
 
 
-def test_classify_focus_editor_overrides_chat():
-    labels = FocusLabels("Edit", "chat input", ("editor",))
-    assert classify_focus(labels, "ide") == "editor"
+def test_classify_focus_whatsapp_message_box_is_agent():
+    assert classify_focus(FocusLabels("Group", "Type a message", ()), "text") == "agent"
+    assert classify_focus(FocusLabels("Custom", "", (), writable=True), "text") == "agent"
+    assert classify_focus(FocusLabels("Group", "Chat list", ()), "text") == "unknown"
 
 
-def test_classify_focus_blank_ide_control_is_unknown():
-    assert classify_focus(FocusLabels("", "", ()), "ide") == "unknown"
+def test_classify_focus_search_box_is_agent():
+    assert classify_focus(FocusLabels("Edit", "Search", ("Editor Group",)), "text") == "agent"
+    assert classify_focus(FocusLabels("ComboBox", "Search", ()), "text") == "agent"
+
+
+def test_classify_focus_blank_control_is_unknown():
+    assert classify_focus(FocusLabels("", "", ()), "text") == "unknown"
 
 
 def test_classify_focus_chatgpt_text_box_is_agent():
-    assert classify_focus(FocusLabels("Edit", "Message ChatGPT", ()), "llm") == "agent"
+    assert classify_focus(FocusLabels("Edit", "Message ChatGPT", ()), "text") == "agent"
 
 
-def test_classify_focus_gmail_ignore_is_unknown():
+def test_classify_focus_any_text_box_is_agent():
+    assert classify_focus(FocusLabels("Edit", "compose", ()), "text") == "agent"
+    assert classify_focus(FocusLabels("Edit", "Text Editor", ()), "text") == "agent"
+    assert classify_focus(FocusLabels("Document", "Document", ()), "text") == "agent"
+    assert classify_focus(FocusLabels("ComboBox", "To", ()), "text") == "agent"
+
+
+def test_classify_focus_ignore_is_unknown():
     assert classify_focus(FocusLabels("Edit", "compose", ()), "ignore") == "unknown"
 
 
-def test_classify_focus_open_markdown_file_does_not_hide_agent_box():
-    title = "auto-prompt.mdc - prompt-master - Cursor"
-    assert classify_focus(FocusLabels("Edit", "", (title,)), "ide") == "agent"
-    assert classify_focus(FocusLabels("TabItem", "auto-prompt.mdc", ()), "ide") == "unknown"
-    assert classify_focus(FocusLabels("TabItem", "notes.md", ()), "ide") == "editor"
-
-
-def test_classify_focus_open_source_file_title_does_not_hide_agent_box():
+def test_classify_focus_open_file_title_does_not_hide_a_text_box():
     title = "llm.py - prompt-master - Cursor"
-    assert classify_focus(FocusLabels("Edit", "", (title, title, "Desktop 1")), "ide") == "agent"
-    assert classify_focus(FocusLabels("TabItem", "llm.py", (title,)), "ide") == "editor"
-    editor = "The editor is not accessible at this time."
-    assert classify_focus(FocusLabels("Edit", editor, (title,)), "ide") == "editor"
+    assert classify_focus(FocusLabels("Edit", "", (title, title, "Desktop 1")), "text") == "agent"
+    assert classify_focus(FocusLabels("TabItem", "llm.py", (title,)), "text") == "unknown"
+    assert classify_focus(FocusLabels("Edit", "Search files", (title, "Editor Group")), "text") == "agent"
 
 
-def test_classify_focus_project_title_is_not_the_agent_box():
+def test_classify_focus_project_title_is_not_a_text_box():
     title = ".gitignore - prompt-master - Cursor"
-    assert classify_focus(FocusLabels("Tree", "Files Explorer", (title,)), "ide") == "unknown"
-    assert classify_focus(FocusLabels("Text", "read_agent_text", ()), "ide") == "unknown"
-    assert classify_focus(FocusLabels("Edit", "", (title,)), "ide") == "agent"
-    editor = "The editor is not accessible at this time."
-    assert classify_focus(FocusLabels("Edit", editor, (title,)), "ide") == "editor"
+    assert classify_focus(FocusLabels("Tree", "Files Explorer", (title,)), "text") == "unknown"
+    assert classify_focus(FocusLabels("Text", "read_agent_text", ()), "text") == "unknown"
+    assert classify_focus(FocusLabels("Edit", "", (title,)), "text") == "agent"
 
 
 def test_read_agent_text_does_not_call_reader_for_editor_or_unknown():
@@ -225,7 +206,7 @@ def test_write_agent_text_sends_no_keys_unless_still_agent():
         "ide",
         "new prompt",
         set_value=lambda element, text: False,
-        refresh=lambda element: FocusLabels("Edit", "app.py", ("editor",)),
+        refresh=lambda element: FocusLabels("Button", "OK", ()),
         send_keys=send_keys,
     ) == "copied"
     assert keys == []
@@ -334,6 +315,35 @@ def test_build_messages_wraps_draft_and_adds_style():
     assert "<draft>\nfix my code\n</draft>" in msgs[1]["content"]
 
 
+def test_build_screen_messages_sends_the_draft_and_the_screenshot():
+    msgs = build_screen_messages("fix the login", b"\xff\xd8jpeg")
+    assert msgs[0]["role"] == "system"
+    assert "context-aware prompt enhancer" in msgs[0]["content"]
+    assert "<enhanced_prompt>" in msgs[0]["content"]
+    assert "4 to 8" in msgs[0]["content"]
+    parts = msgs[1]["content"]
+    assert "<draft>\nfix the login\n</draft>" in parts[0]["text"]
+    assert parts[1]["type"] == "image_url"
+    assert parts[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_groq_screen_call_uses_a_model_that_can_see_the_screenshot():
+    groq = Provider("groq", "https://api.groq.com/openai/v1", "openai/gpt-oss-120b", extra_params={"reasoning_effort": "low"})
+    ready = provider_for_screen(groq, has_image=True)
+    assert ready.model == "qwen/qwen3.8-27b"
+    assert ready.extra_params == {}
+    assert provider_for_screen(groq, has_image=False).model == "openai/gpt-oss-120b"
+    gemini = Provider("gemini", "https://example.com", "gemini-3.5-flash")
+    assert provider_for_screen(gemini, has_image=True).model == "gemini-3.5-flash"
+
+
+def test_build_screen_messages_allows_an_empty_draft():
+    msgs = build_screen_messages("  ", None)
+    assert "<draft>\n\n</draft>" in msgs[1]["content"]
+    titled = build_screen_messages("  ", None, "WhatsApp")
+    assert "<window_title>\nWhatsApp\n</window_title>" in titled[1]["content"]
+
+
 def test_custom_style_merges():
     styles = all_styles({"linkedin": {"label": "LinkedIn", "instructions": "hook"}})
     assert styles["linkedin"]["label"] == "LinkedIn" and "enhance" in styles
@@ -347,6 +357,7 @@ def test_custom_style_merges():
     ('"Do X."', "Do X."),
     ("<think>hmm</think>\nDo X.", "Do X."),
     ("<draft>\nDo X.\n</draft>", "Do X."),
+    ("<enhanced_prompt>\nDo X.\n</enhanced_prompt>", "Do X."),
     ("Do X.\n```py\nprint(1)\n```", "Do X.\n```py\nprint(1)\n```"),  # inner code kept
 ])
 def test_clean_output(raw, expected):

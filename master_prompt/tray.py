@@ -24,8 +24,8 @@ def make_icon_image(size: int = 64):
 
 
 class Tray:
-    def __init__(self, hotkey_text: str, actions: dict[str, Callable[[], None]],
-                 is_preview_on: Callable[[], bool], is_auto_prompt_on: Callable[[], bool]):
+    def __init__(self, actions: dict[str, Callable[[], None]],
+                 is_auto_prompt_on: Callable[[], bool]):
         self.icon = None
         try:
             import pystray
@@ -37,11 +37,6 @@ class Tray:
             return lambda icon, item: actions[name]()
 
         menu = pystray.Menu(
-            # (From the tray we can't grab text from your app - clicking the tray moves focus
-            # away from it - so this item works on whatever is on the clipboard.)
-            pystray.MenuItem("Enhance clipboard text", act("enhance_clipboard"), default=True),
-            pystray.MenuItem("Show preview before pasting", act("toggle_preview"),
-                             checked=lambda item: is_preview_on()),
             pystray.MenuItem("Auto prompt", act("toggle_auto_prompt"),
                              checked=lambda item: is_auto_prompt_on()),
             pystray.Menu.SEPARATOR,
@@ -53,8 +48,7 @@ class Tray:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", act("quit")),
         )
-        self.icon = pystray.Icon("master-prompt", make_icon_image(),
-                                 f"Master Prompt ({hotkey_text})", menu)
+        self.icon = pystray.Icon("master-prompt", make_icon_image(), "Master Prompt", menu)
 
     def start(self) -> None:
         if self.icon:

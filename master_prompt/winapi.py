@@ -403,6 +403,21 @@ user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MONITORINFO)]
 user32.GetMonitorInfoW.restype = wintypes.BOOL
 
 
+user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+user32.MonitorFromWindow.restype = wintypes.HANDLE
+
+
+def monitor_rect(hwnd: int) -> tuple[int, int, int, int]:
+    """(left, top, right, bottom) of the full monitor that contains this window."""
+    mon = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+    info = MONITORINFO()
+    info.cbSize = ctypes.sizeof(MONITORINFO)
+    if mon and user32.GetMonitorInfoW(mon, ctypes.byref(info)):
+        r = info.rcMonitor
+        return r.left, r.top, r.right, r.bottom
+    return 0, 0, 1920, 1080
+
+
 def work_area_at(x: int, y: int) -> tuple[int, int, int, int]:
     """(left, top, right, bottom) of the usable screen area (no taskbar) of the monitor at x,y."""
     mon = user32.MonitorFromPoint(wintypes.POINT(x, y), 2)  # MONITOR_DEFAULTTONEAREST
@@ -428,6 +443,27 @@ def make_no_activate(hwnd: int) -> None:
     """A window that shows on top but never takes keyboard focus (for toasts)."""
     style = _GetWindowLong(hwnd, GWL_EXSTYLE)
     _SetWindowLong(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST)
+
+
+# Owned by the hidden main window, an overlay disappears when another app is focused.
+GWL_HWNDPARENT = -8
+HWND_TOPMOST = -1
+SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
+SWP_SHOWWINDOW, SWP_FRAMECHANGED, SWP_NOOWNERZORDER = 0x0040, 0x0020, 0x0200
+user32.SetWindowPos.argtypes = [
+    wintypes.HWND, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT,
+]
+user32.SetWindowPos.restype = wintypes.BOOL
+
+
+def pin_overlay(hwnd: int) -> None:
+    """Keep a small overlay above other apps, and do not take keyboard focus."""
+    make_no_activate(hwnd)
+    _SetWindowLong(hwnd, GWL_HWNDPARENT, 0)
+    user32.SetWindowPos(
+        hwnd, ctypes.c_void_p(HWND_TOPMOST), 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED | SWP_NOOWNERZORDER,
+    )
 
 
 # --------------------------------------------------------------------------

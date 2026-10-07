@@ -5,11 +5,8 @@
 # =====================================================================
 
 [hotkeys]
-# Grab the text from the box you're typing in, improve it, put it back.
+# The running app does not register these. Auto prompt is the only rewrite path.
 enhance = "ctrl+alt+p"
-# Improve whatever text is on the clipboard (for terminals / apps where
-# the main shortcut can't grab text). Result goes back to the clipboard.
-# Set to "" to turn it off.
 enhance_clipboard = "ctrl+alt+o"
 
 [behavior]

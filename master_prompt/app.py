@@ -56,7 +56,8 @@ class App:
         self.popup: PreviewPopup | None = None
         self.confirm: ConfirmPopup | None = None
         self.dot: FloatDot | None = None
-        self._pending = None  # focused agent box held for Yes; text is not read here
+        self._pending = None  # focused text box held for Yes; text is not read here
+        self._dot_hwnd = 0
         self._capture_uia = None
         self.key_window: KeySetupWindow | None = None
         self.hotkey_text = settings.hotkey_enhance  # the one really registered (may be a fallback)
@@ -76,10 +77,7 @@ class App:
         self._build_popup()
         self._build_confirm()
         self._build_dot()
-        self._start_hotkeys()
-        self.tray = Tray(_pretty(self.hotkey_text), {
-            "enhance_clipboard": lambda: self._post("hotkey", "enhance_clipboard"),
-            "toggle_preview": lambda: self._post("toggle_preview"),
+        self.tray = Tray({
             "toggle_auto_prompt": lambda: self._post("toggle_auto_prompt"),
             "api_keys": lambda: self._post("open_keys"),
             "open_config": lambda: self._open(CONFIG_PATH),
@@ -87,15 +85,15 @@ class App:
             "open_log": lambda: self._open(LOG_PATH),
             "reload": lambda: self._post("reload"),
             "quit": lambda: self._post("quit"),
-        }, is_preview_on=lambda: self.settings.preview, is_auto_prompt_on=lambda: self.settings.auto_prompt)
+        }, is_auto_prompt_on=lambda: self.settings.auto_prompt)
         self.tray.start()
         self._sync_watcher()
 
         if not self.settings.usable_providers:
             self._on_open_keys()
         else:
-            self.toast.show(f"Master Prompt is running ✨\nPress {_pretty(self.hotkey_text)} "
-                            "in any text box." + self._hotkey_note(), duration_ms=5000)
+            self.toast.show("Master Prompt is running.\nClick the dot, then Yes, to improve the text in the box.",
+                            duration_ms=5000)
 
         self.root.after(40, self._pump)
         try:
@@ -349,6 +347,7 @@ class App:
             self.toast.show("Still enhancing the previous prompt.", duration_ms=2000)
             return
         self._drop_pending()
+        self._dot_hwnd = winapi.foreground_window()
         element, labels, kind, uia = capture_focused_agent()
         if element:
             self._pending = (element, labels, kind, uia)
@@ -394,33 +393,97 @@ class App:
             self._drop_pending()
             return
         element, labels, kind = self._take_pending()
-        if not element or labels is None or not kind:
-            from .watch import _release
-
-            _release(element)
-            self.toast.show("Couldn't find the prompt box. Click inside the agent box, then the dot.",
-                            kind="error", duration_ms=4000)
-            return
+        image = self._grab_screen_hiding_dot()
         self.busy = True
         self.busy_since = time.monotonic()
         self.job += 1
         self.toast.show("✨ Enhancing your prompt…", duration_ms=0)
-        self._thread(self._auto_worker, self.job, element, labels, kind)
+        if not element or labels is None or not kind:
+            from .watch import _release
 
-    def _auto_worker(self, job: int, element, labels, kind: str) -> None:
+            _release(element)
+            self._thread(self._auto_keyboard_worker, self.job, self._dot_hwnd, image)
+            return
+        self._thread(self._auto_worker, self.job, element, labels, kind, image)
+
+    def _grab_screen_hiding_dot(self) -> bytes | None:
+        """Hide the dot, photograph the monitor, then put the dot back."""
+        show_again = bool(self.settings.auto_prompt and self.dot)
+        if self.confirm:
+            self.confirm.hide()
+        if self.dot:
+            self.dot.hide()
+        try:
+            self.root.update()
+            time.sleep(0.12)
+            from .screen import grab_foreground_jpeg
+
+            hwnd = self._dot_hwnd or winapi.foreground_window()
+            return grab_foreground_jpeg(hwnd)
+        except Exception:
+            log.exception("Couldn't capture the screen")
+            return None
+        finally:
+            if show_again:
+                self._show_dot()
+
+    def _auto_keyboard_worker(self, job: int, hwnd: int, image: bytes | None) -> None:
+        """Read and replace a box the usual way when it is not a plain text control.
+
+        Chat apps such as WhatsApp draw their own message box. Selecting that
+        box and copying it still reaches the text.
+        """
+        try:
+            if hwnd:
+                winapi.focus_window(hwnd)
+                time.sleep(0.15)
+            try:
+                cap = capture.grab_text(
+                    self.settings.auto_select_all, self.settings.blocked_apps, self.settings.restore_clipboard,
+                )
+                draft = cap.text
+            except capture.CaptureError:
+                if not image:
+                    raise
+                hwnd, proc, title = capture.target_info()
+                cap = capture.Capture(hwnd, proc, title, "", "all")
+                draft = ""
+            res = llm.enhance_screen(
+                draft, image, self.settings.providers, window_title=cap.title,
+                timeout=max(self.settings.timeout_seconds, 45),
+            )
+            how = self._paste_back(cap.hwnd or hwnd, res.text)
+            self.cap = cap
+            self._post("pasted", job, how)
+        except (capture.CaptureError, winapi.ClipboardBusy) as e:
+            self._post("fail", job, str(e))
+        except llm.LLMError as e:
+            self._post("fail", job, str(e))
+        except Exception as e:
+            log.exception("auto prompt keyboard path failed")
+            self._post("fail", job, f"Couldn't rewrite the prompt: {e}")
+
+    def _auto_worker(self, job: int, element, labels, kind: str, image: bytes | None) -> None:
         from .agent_text import AgentTextError, read_agent_text, write_agent_text
         from .watch import COINIT_MULTITHREADED, _release, ole32
 
         ole32.CoInitializeEx(None, COINIT_MULTITHREADED)
         try:
-            text = read_agent_text(element, labels, kind)
-            res = llm.enhance(text, self.settings.providers, style=self.style,
-                              custom_styles=self.settings.custom_styles,
-                              timeout=self.settings.timeout_seconds)
+            try:
+                text = read_agent_text(element, labels, kind)
+            except AgentTextError as e:
+                if not image or "Nothing to rewrite" not in str(e):
+                    raise
+                text = ""
+            title = winapi.window_title(self._dot_hwnd) if self._dot_hwnd else ""
+            res = llm.enhance_screen(
+                text, image, self.settings.providers, window_title=title,
+                timeout=max(self.settings.timeout_seconds, 45),
+            )
             how = write_agent_text(element, labels, kind, res.text)
             log.info("Auto prompt %s", how)
-            if how == "copied":
-                winapi.set_clipboard_text(res.text)
+            if how != "written":
+                how = self._paste_back(self._dot_hwnd, res.text)
             self._post("auto_done", job, how, res)
         except AgentTextError as e:
             self._post("fail", job, str(e))
@@ -432,6 +495,21 @@ class App:
         finally:
             _release(element)
             ole32.CoUninitialize()
+
+    def _paste_back(self, hwnd: int, text: str) -> str:
+        """Replace the box the draft was copied from with the generated prompt."""
+        if not hwnd:
+            hwnd = winapi.foreground_window()
+        cap = capture.Capture(hwnd=hwnd, process="", title="", text="", mode="all")
+        how = capture.put_text(
+            cap, text, self.settings.restore_clipboard, max(self.settings.paste_restore_delay_ms, 1200),
+        )
+        if how == "copied":
+            time.sleep(0.3)
+            how = capture.put_text(
+                cap, text, self.settings.restore_clipboard, max(self.settings.paste_restore_delay_ms, 1200),
+            )
+        return "written" if how == "pasted" else how
 
     def _on_auto_done(self, job: int, how: str, res: llm.Result) -> None:
         if job != self.job:
@@ -459,7 +537,6 @@ class App:
         self.settings = new
         self.style = new.default_style
         self._build_popup()
-        self._start_hotkeys()
         self._sync_watcher()
         n = len(new.usable_providers)
         self.toast.show(f"Config reloaded · {n} provider(s) ready", kind="ok" if n else "error")
@@ -470,7 +547,7 @@ class App:
             self.key_window.win.lift()
             self.key_window.win.focus_force()
             return
-        self.key_window = KeySetupWindow(self.root, _pretty(self.hotkey_text),
+        self.key_window = KeySetupWindow(self.root,
                                          on_submit=lambda keys: self._thread(self._keys_worker, keys),
                                          on_close=self._on_key_window_closed)
 
@@ -509,7 +586,7 @@ class App:
         log.info("Saved API keys for: %s", ", ".join(n for n, k in keys.items() if k))
         self.key_window.close()
         self._on_reload()
-        self.toast.show(f"✓ All set! Click in any text box and press {_pretty(self.hotkey_text)}.",
+        self.toast.show("All set. Click the dot when your draft is ready.",
                         kind="ok", duration_ms=6000)
 
     def _on_quit(self) -> None:

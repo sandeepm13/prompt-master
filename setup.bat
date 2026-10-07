@@ -35,7 +35,7 @@ echo.
 echo  Setup done!
 echo  1. Put your Groq / Gemini API key in config.toml (opening it now).
 echo  2. Double-click test-key.bat to check the key works.
-echo  3. Double-click run.bat to start. Then press Win+Shift+P in any text box.
+echo  3. Double-click run.bat to start. Click the dot, then Yes, to improve the text in the box.
 echo.
 start notepad config.toml
 pause
