@@ -386,6 +386,80 @@ def focus_window(hwnd: int, timeout: float = 0.6) -> bool:
     return False
 
 
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("hwndActive", wintypes.HWND),
+        ("hwndFocus", wintypes.HWND),
+        ("hwndCapture", wintypes.HWND),
+        ("hwndMenuOwner", wintypes.HWND),
+        ("hwndMoveSize", wintypes.HWND),
+        ("hwndCaret", wintypes.HWND),
+        ("rcCaret", wintypes.RECT),
+    ]
+
+
+user32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.POINTER(GUITHREADINFO)]
+user32.GetGUIThreadInfo.restype = wintypes.BOOL
+user32.SetFocus.argtypes = [wintypes.HWND]
+user32.SetFocus.restype = wintypes.HWND
+
+
+def focused_child(top: int) -> int:
+    """The control that has the caret inside this window, or the window itself."""
+    if not top:
+        return 0
+    info = GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(GUITHREADINFO)
+    thread = user32.GetWindowThreadProcessId(top, None)
+    if thread and user32.GetGUIThreadInfo(thread, ctypes.byref(info)):
+        child = int(info.hwndFocus or 0) or int(info.hwndCaret or 0)
+        if child:
+            return child
+    return int(top)
+
+
+def focus_control(top: int, child: int) -> bool:
+    """Bring the window forward and put the caret back in the same control."""
+    if not focus_window(top or child):
+        return False
+    target = child if child and is_window(child) else top
+    if not target:
+        return False
+    me = kernel32.GetCurrentThreadId()
+    their = user32.GetWindowThreadProcessId(target, None)
+    attached = bool(their and their != me and user32.AttachThreadInput(me, their, True))
+    try:
+        user32.SetFocus(target)
+    finally:
+        if attached:
+            user32.AttachThreadInput(me, their, False)
+    return True
+
+
+def window_class(hwnd: int) -> str:
+    if not hwnd:
+        return ""
+    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetClassNameW.restype = ctypes.c_int
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buf, 256)
+    return buf.value
+
+
+def replace_edit_text(hwnd: int, text: str) -> bool:
+    """Replace the text of a real edit control. Other windows are left alone."""
+    if not is_window(hwnd):
+        return False
+    kind = window_class(hwnd).casefold()
+    if kind not in {"edit", "richedit", "richedit20a", "richedit20w", "richedit50w", "scintilla"}:
+        return False
+    user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPCWSTR]
+    user32.SendMessageW.restype = ctypes.c_ssize_t
+    return bool(user32.SendMessageW(hwnd, 0x000C, 0, text))
+
+
 def cursor_pos() -> tuple[int, int]:
     pt = wintypes.POINT()
     user32.GetCursorPos(ctypes.byref(pt))

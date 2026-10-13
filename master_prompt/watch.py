@@ -463,3 +463,102 @@ def capture_focused_agent():
         if uia is not None:
             uia.close()
         return None, None, "", None
+
+
+VK_RETURN = 0x0D
+
+
+def is_plain_enter(vk: int, shift_down: bool) -> bool:
+    """Enter submits. Shift+Enter is a new line, so it does not count."""
+    return vk == VK_RETURN and not shift_down
+
+
+def enter_should_restore(undo_open: bool, vk: int, shift_down: bool) -> bool:
+    """While the undo box is open, a plain Enter puts the original text back."""
+    return undo_open and is_plain_enter(vk, shift_down)
+
+
+class _KeyInfo(ctypes.Structure):
+    _fields_ = [
+        ("vkCode", wintypes.DWORD),
+        ("scanCode", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
+
+
+class EnterSignal:
+    """While the undo box is showing, notice a plain Enter press and nothing else.
+
+    The key code is checked and discarded. It is not stored.
+    """
+
+    def __init__(self, on_enter) -> None:
+        self._on_enter = on_enter
+        self._thread: threading.Thread | None = None
+        self._thread_id = 0
+        self._ready = threading.Event()
+        self._hook = None
+        self._proc = None
+        self._user32 = None
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._ready.clear()
+        self._thread = threading.Thread(target=self._run, name="enter-signal", daemon=True)
+        self._thread.start()
+        if not self._ready.wait(2):
+            log.warning("Enter watch did not start")
+
+    def stop(self) -> None:
+        if self._thread_id:
+            from . import winapi
+
+            winapi.post_quit(self._thread_id)
+        if self._thread and self._thread.is_alive():
+            self._thread.join(2)
+        self._thread = None
+        self._thread_id = 0
+
+    def _run(self) -> None:
+        from . import winapi
+
+        user32 = self._user32 = winapi.user32
+        _bind_hook_api(user32)
+        user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+        user32.GetAsyncKeyState.restype = ctypes.c_short
+        msg = wintypes.MSG()
+        user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)
+        self._thread_id = winapi.current_thread_id()
+        self._proc = _HOOKPROC(self._on_key)
+        self._hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._proc, None, 0)
+        if not self._hook:
+            log.warning("Enter watch hook was not installed")
+        self._ready.set()
+        try:
+            while True:
+                result = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+                if result == 0 or result == -1:
+                    return
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+        finally:
+            if self._hook:
+                user32.UnhookWindowsHookEx(self._hook)
+                self._hook = None
+
+    def _on_key(self, nCode, wParam, lParam):
+        try:
+            if nCode >= 0 and int(wParam) in (WM_KEYDOWN, WM_SYSKEYDOWN) and lParam:
+                vk = int(ctypes.cast(lParam, ctypes.POINTER(_KeyInfo)).contents.vkCode)
+                shift = bool(self._user32.GetAsyncKeyState(0x10) & 0x8000) if self._user32 else False
+                if enter_should_restore(True, vk, shift):
+                    self._on_enter()
+                    return 1
+            if self._user32 is not None:
+                return self._user32.CallNextHookEx(self._hook, nCode, wParam, lParam)
+        except Exception:
+            log.exception("Enter watch failed")
+        return 0

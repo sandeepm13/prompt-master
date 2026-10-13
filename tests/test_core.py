@@ -8,14 +8,21 @@ from pathlib import Path
 import pytest
 
 from master_prompt.agent_text import AgentTextError, clipboard_to_keep, read_agent_text, write_agent_text
-from master_prompt.config import ConfigError, Provider, parse_settings, set_auto_prompt, set_provider_key
-from master_prompt.ui import clamp_point, default_dot_origin, load_dot_position, pointer_action, save_dot_position
+from master_prompt.config import (
+    ConfigError, Provider, detect_provider, parse_settings, provider_name_for_url, set_auto_prompt,
+    set_provider_key,
+    upsert_provider,
+)
+from master_prompt.ui import (
+    clamp_point, default_dot_origin, dot_click_target, load_dot_position, pointer_action, save_dot_position,
+)
 from master_prompt.focus_kind import FocusLabels, classify_focus
 from master_prompt.idle import IdleTimer
 from master_prompt.hotkeys import MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, HotkeyError, parse_hotkey
 from master_prompt.llm import LLMError, enhance, provider_for_screen
-from master_prompt.prompts import all_styles, build_messages, build_screen_messages, clean_output
+from master_prompt.prompts import all_styles, build_messages, build_screen_messages, clean_output, draft_needs_screen
 from master_prompt.targets import classify_window
+from master_prompt.watch import enter_should_restore, is_plain_enter
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -40,14 +47,13 @@ def test_parse_hotkey_bad(bad):
 def test_example_config_parses():
     with open(ROOT / "config.example.toml", "rb") as f:
         s = parse_settings(tomllib.load(f))
-    assert s.hotkey_enhance == "ctrl+alt+p"
+    assert s.hotkey_auto == "ctrl+alt+p"
     assert s.preview is True
     assert s.auto_prompt is True
     assert s.auto_prompt_idle_seconds == 3
     assert [p.name for p in s.providers] == ["groq", "gemini"]
     assert "windowsterminal.exe" in s.blocked_apps
-    parse_hotkey(s.hotkey_enhance)
-    parse_hotkey(s.hotkey_enhance_clipboard)
+    parse_hotkey(s.hotkey_auto)
 
 
 def test_provider_key_from_env(monkeypatch):
@@ -63,9 +69,51 @@ def test_set_provider_key_keeps_comments_and_other_providers():
     new = set_provider_key(set_provider_key(text, "gemini", "AIza-1"), "groq", " gsk_abc ")
     s = parse_settings(tomllib.loads(new))
     assert {p.name: p.api_key for p in s.providers} == {"groq": "gsk_abc", "gemini": "AIza-1"}
-    assert new.count("\n") == text.count("\n") and "#  Free keys:" in new
+    assert new.count("\n") == text.count("\n") and "Any OpenAI-compatible service works" in new
     again = set_provider_key(new, "groq", "gsk_new")  # replaced, not added
     assert "gsk_abc" not in again and again.count('api_key = "gsk_new"') == 1
+
+
+def test_detect_provider_from_key_prefix():
+    groq = detect_provider("  gsk_example  ")
+    assert groq["name"] == "groq" and groq["api_key"] == "gsk_example"
+    assert groq["base_url"] == "https://api.groq.com/openai/v1"
+    assert detect_provider("AIza-example")["name"] == "gemini"
+    assert detect_provider("sk-or-v1-example")["name"] == "openrouter"
+    assert detect_provider("sk-ant-example")["name"] == "anthropic"
+    assert detect_provider("sk-proj-example")["name"] == "openai"
+    assert detect_provider("not-a-known-key") is None
+
+
+def test_provider_name_for_url():
+    assert provider_name_for_url("https://api.groq.com/openai/v1") == "groq"
+    assert provider_name_for_url("https://api.openai.com/v1") == "openai"
+    assert provider_name_for_url("https://api.together.xyz/v1") == "together"
+    assert provider_name_for_url("http://localhost:11434/v1") == "local"
+
+
+def test_upsert_provider_updates_known_block_and_appends_a_new_one():
+    text = (ROOT / "config.example.toml").read_text(encoding="utf-8")
+    same_model = upsert_provider(
+        text, name="groq", base_url="https://api.groq.com/openai/v1",
+        model="openai/gpt-oss-120b", api_key="gsk_same",
+    )
+    assert 'api_key = "gsk_same"' in same_model and "reasoning_effort" in same_model
+    changed = upsert_provider(
+        same_model, name="groq", base_url="https://api.groq.com/openai/v1",
+        model="openai/gpt-oss-20b", api_key="gsk_new",
+    )
+    groq = next(p for p in parse_settings(tomllib.loads(changed)).providers if p.name == "groq")
+    assert groq.model == "openai/gpt-oss-20b" and groq.api_key == "gsk_new" and groq.extra_params == {}
+    added = upsert_provider(
+        changed, name="openai", base_url="https://api.openai.com/v1",
+        model="gpt-4o-mini", api_key="sk-test",
+    )
+    names = [p.name for p in parse_settings(tomllib.loads(added)).providers]
+    assert names == ["groq", "gemini", "openai"]
+    assert "Any OpenAI-compatible service works" in added
+    with pytest.raises(ConfigError):
+        upsert_provider(text, name="x", base_url="https://x", model='bad"model', api_key="k")
 
 
 def test_set_provider_key_adds_missing_line_and_rejects_bad_input():
@@ -87,11 +135,11 @@ def test_set_auto_prompt_toggles_without_dropping_comments():
     text = (ROOT / "config.example.toml").read_text(encoding="utf-8")
     on = set_auto_prompt(text, True)
     assert parse_settings(tomllib.loads(on)).auto_prompt is True
-    assert "#  Free keys:" in on and "ask \"Generate the prompt?\"" in on
+    assert "Any OpenAI-compatible service works" in on and "ask \"Generate the prompt?\"" in on
     assert on.count("\n") == text.count("\n")
     off = set_auto_prompt(on, False)
     assert parse_settings(tomllib.loads(off)).auto_prompt is False
-    assert "#  Free keys:" in off and "ask \"Generate the prompt?\"" in off
+    assert "Any OpenAI-compatible service works" in off and "ask \"Generate the prompt?\"" in off
     assert off.count("\n") == on.count("\n")
     assert off.count("auto_prompt = false") == 1
 
@@ -263,6 +311,16 @@ def test_dot_click_is_a_short_press_and_a_drag_moves_it():
     assert pointer_action(0, 0) == "click"
     assert pointer_action(4, -4) == "click"
     assert pointer_action(5, 0) == "drag"
+    assert dot_click_target(10, False) == "generate"
+    assert dot_click_target(50, False) is None
+    assert dot_click_target(10, True) == "generate"
+    assert dot_click_target(50, True) == "undo"
+    assert is_plain_enter(0x0D, False)
+    assert not is_plain_enter(0x0D, True)
+    assert not is_plain_enter(0x41, False)
+    assert enter_should_restore(True, 0x0D, False)
+    assert not enter_should_restore(False, 0x0D, False)
+    assert not enter_should_restore(True, 0x0D, True)
 
 
 def test_dot_starts_on_the_right_and_stays_on_screen():
@@ -335,6 +393,23 @@ def test_groq_screen_call_uses_a_model_that_can_see_the_screenshot():
     assert provider_for_screen(groq, has_image=False).model == "openai/gpt-oss-120b"
     gemini = Provider("gemini", "https://example.com", "gemini-3.5-flash")
     assert provider_for_screen(gemini, has_image=True).model == "gemini-3.5-flash"
+
+
+def test_draft_needs_screen_only_when_the_text_cannot_stand_alone():
+    assert draft_needs_screen("")
+    assert draft_needs_screen("   ")
+    assert draft_needs_screen("fix this")
+    assert draft_needs_screen("this error")
+    assert not draft_needs_screen("write a short poem about rain")
+    assert not draft_needs_screen(
+        "rewrite my resume for a backend engineer role and keep it to one page"
+    )
+
+
+def test_text_only_screen_message_says_there_is_no_screenshot():
+    msgs = build_screen_messages("rewrite my resume for a backend role", None, "Docs")
+    assert isinstance(msgs[1]["content"], str)
+    assert "No screenshot is attached." in msgs[1]["content"]
 
 
 def test_build_screen_messages_allows_an_empty_draft():

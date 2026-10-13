@@ -14,6 +14,7 @@ import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def bundle_dir() -> Path:
@@ -71,8 +72,8 @@ class Provider:
 
 @dataclass
 class Settings:
-    hotkey_enhance: str = "win+shift+p"
-    hotkey_enhance_clipboard: str = ""
+    hotkey_auto: str = "ctrl+alt+p"
+    hotkey_undo: str = "ctrl+alt+z"
     preview: bool = True
     auto_select_all: bool = True
     restore_clipboard: bool = True
@@ -138,6 +139,121 @@ def set_provider_key(text: str, provider: str, key: str) -> str:
     raise ConfigError(f"config.toml has no [[providers]] entry named '{provider}'.")
 
 
+# Most specific prefix first. sk-or- and sk-ant- must be checked before sk-.
+_KEY_PROVIDERS = (
+    ("gsk_", "groq", "https://api.groq.com/openai/v1", "openai/gpt-oss-120b"),
+    ("AIza", "gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.5-flash"),
+    ("sk-or-", "openrouter", "https://openrouter.ai/api/v1", "openai/gpt-4o-mini"),
+    ("sk-ant-", "anthropic", "https://api.anthropic.com/v1", "claude-sonnet-4-5"),
+    ("sk-", "openai", "https://api.openai.com/v1", "gpt-4o-mini"),
+)
+
+
+def detect_provider(api_key: str) -> dict[str, str] | None:
+    """Tell which service a key belongs to from its prefix. None if it is unknown."""
+    key = api_key.strip()
+    for prefix, name, base_url, model in _KEY_PROVIDERS:
+        if key.startswith(prefix):
+            return {"name": name, "base_url": base_url, "model": model, "api_key": key}
+    return None
+
+
+def provider_name_for_url(base_url: str) -> str:
+    """Pick a short config name from an OpenAI-compatible base URL."""
+    host = (urlparse(base_url).hostname or "custom").lower()
+    for needle, name in (
+        ("groq.com", "groq"),
+        ("googleapis.com", "gemini"),
+        ("openai.com", "openai"),
+        ("openrouter.ai", "openrouter"),
+    ):
+        if needle in host:
+            return name
+    if host in ("localhost", "127.0.0.1"):
+        return "local"
+    parts = [p for p in host.split(".") if p not in ("www", "api", "com", "ai", "io", "dev", "net")]
+    raw = parts[0] if parts else "custom"
+    name = re.sub(r"[^a-z0-9]+", "", raw)
+    return name or "custom"
+
+
+def _provider_blocks(lines: list[str]) -> list[list[int]]:
+    blocks: list[list[int]] = []
+    current: list[int] | None = None
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("[[providers]]"):
+            current = [i]
+            blocks.append(current)
+        elif s.startswith("["):
+            current = None
+        elif current is not None:
+            current.append(i)
+    return blocks
+
+
+def _assignment_value(line: str, key: str) -> str | None:
+    match = re.match(rf'\s*{key}\s*=\s*"([^"]*)"', line)
+    return match.group(1) if match else None
+
+
+def _set_field(block_lines: list[str], key: str, value: str) -> None:
+    new = f'{key} = "{value}"\n'
+    for i, line in enumerate(block_lines):
+        if re.match(rf"\s*{key}\s*=", line):
+            block_lines[i] = new
+            return
+    block_lines.append(new)
+
+
+def upsert_provider(text: str, *, name: str, base_url: str, model: str, api_key: str) -> str:
+    """
+    Update the [[providers]] block named `name`, or append one.
+    Comments outside that block stay. extra_params is dropped only when the model changes,
+    because those options belong to the previous model.
+    """
+    for label, value in (("name", name), ("base_url", base_url), ("model", model), ("api_key", api_key)):
+        if any(c in value for c in '"\\\r\n'):
+            raise ConfigError(f"The {label} contains a quote or a line break.")
+    if not name or not base_url or not model:
+        raise ConfigError("A provider needs a name, a base URL, and a model.")
+    lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    for block in _provider_blocks(lines):
+        names = [i for i in block if _assignment_value(lines[i], "name") == name]
+        if not names:
+            continue
+        header = block[0]
+        content = [lines[i] for i in block[1:]]
+        old_model = next((_assignment_value(ln, "model") for ln in content if _assignment_value(ln, "model")), None)
+        _set_field(content, "base_url", base_url.rstrip("/"))
+        _set_field(content, "model", model)
+        _set_field(content, "api_key", api_key)
+        if old_model and old_model != model:
+            content = [ln for ln in content if not re.match(r"\s*extra_params\s*=", ln)]
+        return "".join(lines[: header + 1] + content + lines[block[-1] + 1 :])
+    addition = (
+        f'\n[[providers]]\nname = "{name}"\nbase_url = "{base_url.rstrip("/")}"\n'
+        f'model = "{model}"\napi_key = "{api_key}"\ntemperature = 0.3\n'
+    )
+    body = "".join(lines).rstrip()
+    return (body + "\n" if body else "") + addition
+
+
+def save_provider(spec: dict[str, str], path: Path | None = None) -> None:
+    """Write one provider (name, base URL, model, API key) into config.toml."""
+    path = path or ensure_config_file()
+    text = path.read_text(encoding="utf-8")
+    path.write_text(upsert_provider(
+        text,
+        name=spec["name"].strip(),
+        base_url=spec["base_url"].strip(),
+        model=spec["model"].strip(),
+        api_key=spec.get("api_key", "").strip(),
+    ), encoding="utf-8")
+
+
 def save_provider_keys(keys: dict[str, str], path: Path | None = None) -> None:
     """Write {provider name: key} into config.toml (empty keys are skipped)."""
     path = path or ensure_config_file()
@@ -185,8 +301,8 @@ def set_auto_prompt(text: str, enabled: bool) -> str:
 def parse_settings(data: dict) -> Settings:
     s = Settings()
     hk = data.get("hotkeys", {})
-    s.hotkey_enhance = str(hk.get("enhance", s.hotkey_enhance))
-    s.hotkey_enhance_clipboard = str(hk.get("enhance_clipboard", s.hotkey_enhance_clipboard))
+    s.hotkey_auto = str(hk.get("auto", s.hotkey_auto))
+    s.hotkey_undo = str(hk.get("undo", s.hotkey_undo))
 
     b = data.get("behavior", {})
     s.preview = bool(b.get("preview", s.preview))

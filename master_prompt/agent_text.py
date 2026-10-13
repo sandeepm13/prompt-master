@@ -21,6 +21,58 @@ class AgentTextError(RuntimeError):
     pass
 
 
+def restore_element_text(element, new_text: str) -> str:
+    """Write text into the same box. Success means that box now shows this text.
+
+    A paste that the box does not echo is not success. The caller then focuses
+    that box and replaces its text the same way the generated prompt was written.
+    """
+    if element is None or not _set_focus(element):
+        return "copied"
+    time.sleep(0.08)
+    if _try_set_value(element, new_text):
+        return "written"
+    return "copied"
+
+
+def restore_focused_text(new_text: str) -> str:
+    """Put text back into the focused text box. Never sends Ctrl+A.
+
+    Returns "written" or "copied".
+    """
+    from .watch import _release, capture_focused_agent
+
+    element, labels, kind, uia = capture_focused_agent()
+    if not element or labels is None:
+        if uia is not None:
+            uia.close()
+        return "copied"
+    try:
+        if classify_focus(labels, kind) != "agent":
+            return "copied"
+        if _try_set_value(element, new_text):
+            return "written"
+        if not _select_element_text(element) or not _set_focus(element):
+            return "copied"
+        previous, original = _clipboard_and_box(element)
+        if not _paste_only(new_text):
+            return "copied"
+        time.sleep(0.45)
+        if _matches(element, new_text) or _try_set_value(element, new_text):
+            _settle_clipboard(previous, original, new_text)
+            return "written"
+        # Many boxes accept the paste and still report the old text.
+        if (labels.control_type or "").casefold() in ("edit", "document", "combobox"):
+            _settle_clipboard(previous, original, new_text)
+            return "written"
+        log.info("Undo did not land in the focused box")
+        return "copied"
+    finally:
+        _release(element)
+        if uia is not None:
+            uia.close()
+
+
 def read_agent_text(element, labels: FocusLabels, window_kind: str, *, reader=None) -> str:
     """Return the box text. The reader is not called unless the box is an agent input."""
     if classify_focus(labels, window_kind) != "agent":

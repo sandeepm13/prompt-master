@@ -33,11 +33,10 @@ if not exist config.toml copy config.example.toml config.toml >nul
 
 echo.
 echo  Setup done!
-echo  1. Put your Groq / Gemini API key in config.toml (opening it now).
+echo  1. On first launch the app asks for an API key and detects the service.
 echo  2. Double-click test-key.bat to check the key works.
 echo  3. Double-click run.bat to start. Click the dot, then Yes, to improve the text in the box.
 echo.
-start notepad config.toml
 pause
 exit /b 0
 

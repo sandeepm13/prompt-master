@@ -5,9 +5,10 @@
 # =====================================================================
 
 [hotkeys]
-# The running app does not register these. Auto prompt is the only rewrite path.
-enhance = "ctrl+alt+p"
-enhance_clipboard = "ctrl+alt+o"
+# Same as clicking the dot and pressing Yes. Set to "" to turn it off.
+auto = "ctrl+alt+p"
+# Puts your previous text back after a rewrite, even when the dot is hidden.
+undo = "ctrl+alt+z"
 
 [behavior]
 preview = true              # true = show the popup first; false = replace text directly
@@ -24,14 +25,12 @@ auto_prompt_idle_seconds = 3
 #  AI providers - tried top to bottom. If one fails (limit reached,
 #  offline, error), the next one is used automatically.
 #
-#  API keys: EITHER paste the key into api_key = "..."
-#            OR set a Windows environment variable (safer):
+#  The first launch asks only for an API key and detects the service from it.
+#  Any OpenAI-compatible service works when the key identifies it.
+#  Groq and Gemini below are the examples used when those keys are recognized.
+#  You can also set a Windows environment variable and restart:
 #               setx GROQ_API_KEY "gsk_..."
 #               setx GEMINI_API_KEY "AIza..."
-#            (then restart the app)
-#
-#  Free keys:  Groq   -> https://console.groq.com/keys
-#              Gemini -> https://aistudio.google.com/apikey
 # ---------------------------------------------------------------------
 
 [[providers]]

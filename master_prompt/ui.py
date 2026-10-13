@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import sys
 import tkinter as tk
-import webbrowser
 from pathlib import Path
 from tkinter import ttk
 from typing import Callable
@@ -375,6 +374,19 @@ def pointer_action(dx: int, dy: int) -> str:
     return "drag"
 
 
+def dot_click_target(x: int, undo: bool, size: int = 32, gap: int = 8, pad: int = 4) -> str | None:
+    """The dot generates. The Undo label inside the box, when shown, undoes once."""
+    if not undo:
+        if 0 <= x < size:
+            return "generate"
+        return None
+    if x < pad + size:
+        return "generate"
+    if x >= pad + size + gap:
+        return "undo"
+    return None
+
+
 def clamp_point(x: int, y: int, width: int, height: int, area: tuple[int, int, int, int]) -> tuple[int, int]:
     left, top, right, bottom = area
     return (
@@ -404,17 +416,28 @@ def save_dot_position(path: Path, x: int, y: int) -> None:
 
 
 class FloatDot:
-    """A small always-on-top dot. Drag moves it. A click calls on_click. It never reads text."""
+    """A small always-on-top dot. Drag moves it. A click calls on_click. It never reads text.
+
+    After a prompt is written, the dot sits inside a small box with an Undo label.
+    One click on that label calls on_undo.
+    """
 
     SIZE = 32
+    GAP = 8
+    PAD = 4
+    BOX_H = 40
+    LABEL_W = 78
     _CHROMA = "#010101"
 
-    def __init__(self, root: tk.Tk, *, on_click: Callable[[], None], on_place: Callable[[int, int], None]):
+    def __init__(self, root: tk.Tk, *, on_click: Callable[[], None], on_place: Callable[[int, int], None],
+                 on_undo: Callable[[], None] | None = None):
         self.on_click = on_click
         self.on_place = on_place
+        self.on_undo = on_undo or (lambda: None)
         self._press: tuple[int, int] | None = None
         self._origin: tuple[int, int] = (0, 0)
         self._visible = False
+        self._undo = False
         self._pin_job: str | None = None
         w = self.win = tk.Toplevel(root)
         w.withdraw()
@@ -426,18 +449,74 @@ class FloatDot:
         canvas = tk.Canvas(w, width=self.SIZE, height=self.SIZE, bg=self._CHROMA,
                            highlightthickness=0, bd=0, cursor="hand2")
         canvas.pack()
-        canvas.create_oval(2, 2, self.SIZE - 2, self.SIZE - 2, fill=ACCENT, outline="")
-        canvas.create_oval(11, 11, self.SIZE - 11, self.SIZE - 11, fill="#ffffff", outline="")
         self._canvas = canvas
+        self._redraw()
         for target in (w, canvas):
             target.bind("<ButtonPress-1>", self._down)
             target.bind("<B1-Motion>", self._motion)
             target.bind("<ButtonRelease-1>", self._up)
 
+    def _span(self) -> int:
+        if not self._undo:
+            return self.SIZE
+        return self.PAD + self.SIZE + self.GAP + self.LABEL_W + self.PAD
+
+    def _height(self) -> int:
+        return self.BOX_H if self._undo else self.SIZE
+
+    def _dot_origin(self) -> tuple[int, int]:
+        """Top-left of the round dot, even while it sits inside the undo box."""
+        x, y = self.win.winfo_x(), self.win.winfo_y()
+        if self._undo:
+            x += self.PAD
+            y += (self.BOX_H - self.SIZE) // 2
+        return x, y
+
+    def _round_rect(self, x1: int, y1: int, x2: int, y2: int, radius: int, fill: str) -> None:
+        r = radius
+        self._canvas.create_oval(x1, y1, x1 + 2 * r, y1 + 2 * r, fill=fill, outline="")
+        self._canvas.create_oval(x2 - 2 * r, y1, x2, y1 + 2 * r, fill=fill, outline="")
+        self._canvas.create_oval(x1, y2 - 2 * r, x1 + 2 * r, y2, fill=fill, outline="")
+        self._canvas.create_oval(x2 - 2 * r, y2 - 2 * r, x2, y2, fill=fill, outline="")
+        self._canvas.create_rectangle(x1 + r, y1, x2 - r, y2, fill=fill, outline="")
+        self._canvas.create_rectangle(x1, y1 + r, x2, y2 - r, fill=fill, outline="")
+
+    def _redraw(self) -> None:
+        width, height = self._span(), self._height()
+        self._canvas.configure(width=width, height=height)
+        self._canvas.delete("all")
+        dot_y = (height - self.SIZE) // 2
+        dot_x = self.PAD if self._undo else 0
+        if self._undo:
+            self._round_rect(0, 0, width, height, height // 2, "#2a2d36")
+            self._round_rect(1, 1, width - 1, height - 1, height // 2 - 1, BG)
+            label_x = dot_x + self.SIZE + self.GAP
+            self._canvas.create_text(
+                label_x, height // 2, text="↩  Undo", fill=FG, anchor="w", font=("Segoe UI", 10),
+            )
+        self._canvas.create_oval(dot_x + 2, dot_y + 2, dot_x + self.SIZE - 2, dot_y + self.SIZE - 2,
+                                 fill=ACCENT, outline="")
+        self._canvas.create_oval(dot_x + 11, dot_y + 11, dot_x + self.SIZE - 11, dot_y + self.SIZE - 11,
+                                 fill="#ffffff", outline="")
+
+    def set_undo(self, show: bool) -> None:
+        show = bool(show)
+        if self._undo == show:
+            return
+        origin = self._dot_origin() if self._visible else (self.win.winfo_x(), self.win.winfo_y())
+        self._undo = show
+        self._redraw()
+        if self._visible:
+            self.show(*origin)
+
     def show(self, x: int, y: int) -> None:
+        # x, y is the dot's top-left. The box, when shown, wraps that same dot.
+        if self._undo:
+            x -= self.PAD
+            y -= (self.BOX_H - self.SIZE) // 2
         area = _work_area(self.win, x, y)
-        x, y = clamp_point(x, y, self.SIZE, self.SIZE, area)
-        self.win.geometry(f"{self.SIZE}x{self.SIZE}+{x}+{y}")
+        x, y = clamp_point(x, y, self._span(), self._height(), area)
+        self.win.geometry(f"{self._span()}x{self._height()}+{x}+{y}")
         self._visible = True
         self.win.deiconify()
         self.win.lift()
@@ -478,7 +557,7 @@ class FloatDot:
             pass
 
     def bounds(self) -> tuple[int, int, int, int]:
-        return self.win.winfo_x(), self.win.winfo_y(), self.SIZE, self.SIZE
+        return self.win.winfo_x(), self.win.winfo_y(), self._span(), self._height()
 
     def _down(self, event) -> None:
         self._press = (event.x_root, event.y_root)
@@ -494,7 +573,7 @@ class FloatDot:
         nx = self._origin[0] + dx
         ny = self._origin[1] + dy
         area = _work_area(self.win, nx, ny)
-        x, y = clamp_point(nx, ny, self.SIZE, self.SIZE, area)
+        x, y = clamp_point(nx, ny, self._span(), self._height(), area)
         self.win.geometry(f"+{x}+{y}")
         self._canvas.configure(cursor="fleur")
 
@@ -506,28 +585,28 @@ class FloatDot:
         self._press = None
         self._canvas.configure(cursor="hand2")
         if pointer_action(dx, dy) == "click":
-            self.on_click()
+            target = dot_click_target(event.x, self._undo, self.SIZE, self.GAP, self.PAD)
+            if target == "undo":
+                self.on_undo()
+            elif target == "generate":
+                self.on_click()
             return
-        x, y = self.win.winfo_x(), self.win.winfo_y()
-        self.on_place(x, y)
+        self.on_place(*self._dot_origin())
 
 
 class KeySetupWindow:
     """
-    First-run window: asks for the API keys, tests them, then saves them.
+    First-run window: asks for an API key, detects the service, tests it, then saves it.
     Shown automatically when no key is set, and from the tray menu ("API keys...").
     """
 
-    FIELDS = [  # provider name in config.toml, label, where to get a free key
-        ("groq", "Groq API key (required)", "https://console.groq.com/keys"),
-        ("gemini", "Gemini API key (optional backup)", "https://aistudio.google.com/apikey"),
-    ]
-
     def __init__(self, root: tk.Tk, on_submit: Callable[[dict[str, str]], None],
                  on_close: Callable[[], None]):
+        from .config import detect_provider
+
         self.root = root
         self.on_submit, self.on_close = on_submit, on_close
-        self.entries: dict[str, tk.Entry] = {}
+        self._detect = detect_provider
         w = self.win = tk.Toplevel(root)
         w.title("Master Prompt - setup")
         w.configure(bg=BG)
@@ -535,26 +614,19 @@ class KeySetupWindow:
         w.attributes("-topmost", True)
         w.protocol("WM_DELETE_WINDOW", self.close)
 
-        tk.Label(w, text="✨ Welcome to Master Prompt", bg=BG, fg=FG, font=("Segoe UI Semibold", 13)
+        tk.Label(w, text="Welcome to Master Prompt", bg=BG, fg=FG, font=("Segoe UI Semibold", 13)
                  ).pack(anchor="w", padx=20, pady=(18, 4))
         tk.Label(w, text="Click the dot, then Yes. The draft in the focused box becomes a better prompt.\n"
-                         "It uses a free AI service. Paste your own free key below (takes 1 minute to get).",
-                 bg=BG, fg=FG_DIM, font=FONT, justify="left").pack(anchor="w", padx=20)
+                         "Paste an API key. The app detects the service from the key.",
+                 bg=BG, fg=FG_DIM, font=FONT, justify="left", wraplength=460).pack(anchor="w", padx=20)
 
-        for name, label, url in self.FIELDS:
-            row = tk.Frame(w, bg=BG)
-            row.pack(fill="x", padx=20, pady=(14, 0))
-            tk.Label(row, text=label, bg=BG, fg=FG, font=FONT).pack(side="left")
-            link = tk.Label(row, text="Get a free key ↗", bg=BG, fg=ACCENT, font=FONT_SMALL, cursor="hand2")
-            link.pack(side="right")
-            link.bind("<Button-1>", lambda e, u=url: webbrowser.open(u))
-            entry = tk.Entry(w, show="•", bg=BG_2, fg=FG, insertbackground=FG, relief="flat", font=FONT_TEXT,
-                             width=52)
-            entry.pack(fill="x", padx=20, pady=(4, 0), ipady=5)
-            entry.bind("<Return>", lambda e: self._submit())
-            self.entries[name] = entry
+        tk.Label(w, text="Enter API key", bg=BG, fg=FG, font=FONT).pack(anchor="w", padx=20, pady=(14, 0))
+        self.entry = tk.Entry(w, show="•", bg=BG_2, fg=FG, insertbackground=FG, relief="flat",
+                              font=FONT_TEXT, width=52)
+        self.entry.pack(fill="x", padx=20, pady=(4, 0), ipady=5)
+        self.entry.bind("<Return>", lambda e: self._submit())
 
-        self.status = tk.Label(w, text="Your keys are saved only on this PC.", bg=BG, fg=FG_DIM,
+        self.status = tk.Label(w, text="The key is saved only on this PC, in config.toml.", bg=BG, fg=FG_DIM,
                                font=FONT_SMALL, justify="left", wraplength=460, anchor="w")
         self.status.pack(fill="x", padx=20, pady=(12, 0))
         bottom = tk.Frame(w, bg=BG)
@@ -568,16 +640,21 @@ class KeySetupWindow:
         sw, sh = w.winfo_screenwidth(), w.winfo_screenheight()
         w.geometry(f"+{(sw - w.winfo_reqwidth()) // 2}+{(sh - w.winfo_reqheight()) // 3}")
         w.focus_force()
-        self.entries["groq"].focus_set()
+        self.entry.focus_set()
 
     def _submit(self) -> None:
-        keys = {name: e.get().strip() for name, e in self.entries.items()}
-        if not keys["groq"]:
-            self.show_status("Paste your Groq key first.", error=True)
+        key = self.entry.get().strip()
+        if not key:
+            self.show_status("Enter an API key.", error=True)
+            return
+        spec = self._detect(key)
+        if spec is None:
+            self.show_status("This key isn't recognized. Paste a Groq, Gemini, OpenAI, OpenRouter, or Anthropic key.",
+                             error=True)
             return
         self.btn_save.set_enabled(False)
-        self.show_status("Testing your key…")
-        self.on_submit(keys)
+        self.show_status(f"Detected {spec['name']}. Testing your key…")
+        self.on_submit(spec)
 
     def show_status(self, message: str, error: bool = False) -> None:
         self.status.configure(text=message, fg=ERROR if error else FG_DIM)

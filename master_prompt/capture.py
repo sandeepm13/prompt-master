@@ -22,6 +22,33 @@ from . import winapi
 log = logging.getLogger(__name__)
 
 
+EMPTY_BOX_MESSAGE = "The box is empty. Please type your prompt first."
+
+
+# Grey hint text that apps report as if the user had typed it.
+_PLACEHOLDERS = (
+    "ctrl esc to focus or unfocus claude",
+    "ask anything",
+    "type a message",
+    "write a message",
+    "message claude",
+    "message chatgpt",
+    "ask claude",
+    "reply to claude",
+)
+
+
+def is_placeholder(text: str, field_name: str = "") -> bool:
+    """True when the box holds only an empty-state hint, not a draft."""
+    folded = " ".join(text.replace("[", " ").replace("]", " ").replace("…", " ").replace(".", " ")
+                      .replace("-", " ").casefold().split())
+    if not folded:
+        return True
+    name = " ".join((field_name or "").casefold().split())
+    return folded == name or any(folded == hint or folded.startswith(hint) and len(folded) <= len(hint) + 12
+                                 for hint in _PLACEHOLDERS)
+
+
 class CaptureError(RuntimeError):
     pass
 
@@ -83,8 +110,8 @@ def grab_text(auto_select_all: bool, blocked_apps: list[str], restore_clipboard:
             except winapi.ClipboardBusy:
                 log.warning("Could not restore clipboard after grab")
 
-    if not text.strip():
-        raise CaptureError("No text found. Click inside a text box that has some text, then press the shortcut.")
+    if is_placeholder(text):
+        raise CaptureError(EMPTY_BOX_MESSAGE)
     return Capture(hwnd=hwnd, process=proc, title=title, text=text, mode=mode)
 
 

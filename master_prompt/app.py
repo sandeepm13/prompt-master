@@ -12,7 +12,6 @@ and the main thread reads it every 40 ms.
 """
 from __future__ import annotations
 
-import dataclasses
 import logging
 import os
 import queue
@@ -24,7 +23,7 @@ import tkinter as tk
 from . import capture, history, llm, winapi
 from .config import (
     CONFIG_PATH, DATA_DIR, ConfigError, Settings, ensure_config_file, load_settings,
-    save_provider_keys, set_auto_prompt,
+    save_provider, set_auto_prompt,
 )
 from .hotkeys import HotkeyError, HotkeyListener, parse_hotkey
 from .prompts import all_styles
@@ -38,8 +37,6 @@ log = logging.getLogger(__name__)
 HISTORY_PATH = DATA_DIR / "history.jsonl"
 LOG_PATH = DATA_DIR / "master-prompt.log"
 DOT_PATH = DATA_DIR / "float-dot.json"
-# Tried in order when the main hotkey is already taken by another app on this PC.
-FALLBACK_HOTKEYS = ["win+alt+p", "ctrl+alt+p"]
 
 
 def _pretty(hotkey: str) -> str:
@@ -58,9 +55,11 @@ class App:
         self.dot: FloatDot | None = None
         self._pending = None  # focused text box held for Yes; text is not read here
         self._dot_hwnd = 0
+        self._restore: tuple[int, str, int] | None = None
+        self._undo_element = None
+        self._enter = None
         self._capture_uia = None
         self.key_window: KeySetupWindow | None = None
-        self.hotkey_text = settings.hotkey_enhance  # the one really registered (may be a fallback)
         self.listener: HotkeyListener | None = None
         self.tray: Tray | None = None
         self.watcher = None
@@ -74,6 +73,9 @@ class App:
 
     # ------------------------------------------------------------------ setup
     def run(self) -> None:
+        from .watch import COINIT_MULTITHREADED, ole32
+
+        ole32.CoInitializeEx(None, COINIT_MULTITHREADED)
         self._build_popup()
         self._build_confirm()
         self._build_dot()
@@ -88,6 +90,7 @@ class App:
         }, is_auto_prompt_on=lambda: self.settings.auto_prompt)
         self.tray.start()
         self._sync_watcher()
+        self._start_hotkeys()
 
         if not self.settings.usable_providers:
             self._on_open_keys()
@@ -114,35 +117,28 @@ class App:
         self.confirm = ConfirmPopup(self.root, on_yes=self._on_auto_yes, on_no=self._on_auto_no)
 
     def _build_dot(self) -> None:
-        self.dot = FloatDot(self.root, on_click=self._on_dot_click, on_place=self._save_dot)
+        self.dot = FloatDot(self.root, on_click=self._on_dot_click, on_place=self._save_dot,
+                            on_undo=self._on_undo)
 
     def _start_hotkeys(self) -> None:
         if self.listener:
             self.listener.stop()
-        main = self.settings.hotkey_enhance
-        wanted = {"enhance": [main] + [h for h in FALLBACK_HOTKEYS if h != main.replace(" ", "").lower()]}
-        if self.settings.hotkey_enhance_clipboard:
-            wanted["enhance_clipboard"] = [self.settings.hotkey_enhance_clipboard]
-        parsed = {}
-        for name, texts in wanted.items():
-            try:
-                parsed[name] = [parse_hotkey(t) for t in texts]
-            except HotkeyError as e:
-                self.toast.show(f"Bad hotkey in config.toml: {e}", kind="error", duration_ms=8000)
+            self.listener = None
+        text = self.settings.hotkey_auto.strip()
+        if not text:
+            return
+        try:
+            parsed = {"auto": [parse_hotkey(text)]}
+            if self.settings.hotkey_undo.strip():
+                parsed["undo"] = [parse_hotkey(self.settings.hotkey_undo.strip())]
+        except HotkeyError as e:
+            self.toast.show(f"Bad hotkey in config.toml: {e}", kind="error", duration_ms=8000)
+            return
         self.listener = HotkeyListener(parsed, lambda name: self._post("hotkey", name))
         self.listener.start()
-        self.hotkey_text = self.listener.active.get("enhance", main)
-        if self.tray and self.tray.icon:
-            self.tray.icon.title = f"Master Prompt ({_pretty(self.hotkey_text)})"
         if self.listener.failed:
-            keys = ", ".join(_pretty(t) for t in self.listener.failed.values())
-            self.toast.show(f"{keys} is already used by another app.\nPick a different one in config.toml.",
+            self.toast.show(f"{_pretty(text)} is already used by another app.\nPick a different one in config.toml.",
                             kind="error", duration_ms=9000)
-
-    def _hotkey_note(self) -> str:
-        if self.hotkey_text != self.settings.hotkey_enhance:
-            return f"\n({_pretty(self.settings.hotkey_enhance)} is used by another app on this PC.)"
-        return ""
 
     # ------------------------------------------------------------- event pump
     def _post(self, kind: str, *payload) -> None:
@@ -166,17 +162,18 @@ class App:
 
     # --------------------------------------------------------------- handlers
     def _on_hotkey(self, name: str) -> None:
+        """Ctrl+Alt+P: the same as clicking the dot and pressing Yes. Ctrl+Alt+Z: undo."""
+        if name == "undo":
+            if self._restore and not self.busy:
+                self._on_undo()
+            elif not self.busy:
+                self.toast.show("Nothing to undo.", duration_ms=1800)
+            return
         if self.busy:
-            if self.popup and self.popup.visible:
-                self.popup._present()  # already open: just bring it to the front
-                return
-            if time.monotonic() - self.busy_since < 90:
-                return  # still working on the previous request
-            log.warning("Previous request looked stuck - starting a new one")
-        self.busy = True
-        self.busy_since = time.monotonic()
-        self.job += 1
-        self._thread(self._grab_worker, self.job, name)
+            self.toast.show("Still enhancing the previous prompt.", duration_ms=2000)
+            return
+        self._begin_capture()
+        self._on_auto_yes()
 
     def _grab_worker(self, job: int, name: str) -> None:
         try:
@@ -239,6 +236,7 @@ class App:
         self._close_capture_uia()
         log.warning("Shown to user: %s", message)  # so the log explains failures, not just the toast
         self.toast.show(message, kind="error", duration_ms=6000)
+        self._show_undo_arrow()
 
     # popup buttons -----------------------------------------------------------
     def _accept(self, text: str) -> None:
@@ -267,7 +265,7 @@ class App:
         if how == "copied":
             self.toast.show("✓ Improved prompt copied — press Ctrl+V to paste it.", kind="ok", duration_ms=4000)
         else:
-            self.toast.show("✓ Prompt improved  (Ctrl+Z to undo)", kind="ok", duration_ms=1800)
+            self.toast.show("✓ Prompt improved", kind="ok", duration_ms=1800)
 
     def _cancel(self) -> None:
         self.job += 1  # ignore any answer still on its way
@@ -315,8 +313,10 @@ class App:
         self._stop_watcher()
         if not self.settings.auto_prompt:
             self._hide_dot()
+            self._disarm_enter()
             return
         self._show_dot()
+        self._show_undo_arrow()
 
     def _show_dot(self) -> None:
         if self.dot is None:
@@ -341,11 +341,16 @@ class App:
             log.exception("Couldn't save the dot position")
 
     def _on_dot_click(self) -> None:
-        from .watch import capture_focused_agent
-
         if self.busy:
             self.toast.show("Still enhancing the previous prompt.", duration_ms=2000)
             return
+        self._begin_capture()
+        if self.confirm and self.dot:
+            self.confirm.show_beside(*self.dot.bounds())
+
+    def _begin_capture(self) -> None:
+        from .watch import capture_focused_agent
+
         self._drop_pending()
         self._dot_hwnd = winapi.foreground_window()
         element, labels, kind, uia = capture_focused_agent()
@@ -353,8 +358,6 @@ class App:
             self._pending = (element, labels, kind, uia)
         elif uia is not None:
             uia.close()
-        if self.confirm and self.dot:
-            self.confirm.show_beside(*self.dot.bounds())
 
     def _stop_watcher(self) -> None:
         if self.watcher:
@@ -393,7 +396,9 @@ class App:
             self._drop_pending()
             return
         element, labels, kind = self._take_pending()
-        image = self._grab_screen_hiding_dot()
+        self._input_hwnd = winapi.focused_child(self._dot_hwnd or winapi.foreground_window())
+        if self.dot:
+            self.dot.set_undo(False)
         self.busy = True
         self.busy_since = time.monotonic()
         self.job += 1
@@ -402,9 +407,9 @@ class App:
             from .watch import _release
 
             _release(element)
-            self._thread(self._auto_keyboard_worker, self.job, self._dot_hwnd, image)
+            self._thread(self._auto_keyboard_worker, self.job, self._dot_hwnd)
             return
-        self._thread(self._auto_worker, self.job, element, labels, kind, image)
+        self._thread(self._auto_worker, self.job, element, labels, kind)
 
     def _grab_screen_hiding_dot(self) -> bytes | None:
         """Hide the dot, photograph the monitor, then put the dot back."""
@@ -427,7 +432,36 @@ class App:
             if show_again:
                 self._show_dot()
 
-    def _auto_keyboard_worker(self, job: int, hwnd: int, image: bytes | None) -> None:
+    def _image_for_draft(self, draft: str) -> bytes | None:
+        """Photograph only when the typed text is not enough on its own."""
+        from .prompts import draft_needs_screen
+
+        if not draft.strip():
+            return None  # an empty box is reported to the user; never photograph the screen for it
+        if not draft_needs_screen(draft):
+            log.info("Skipping the screenshot; the draft is enough")
+            return None
+        log.info("Photographing the screen because the draft needs it")
+        return self._grab_screen_on_ui_thread()
+
+    def _grab_screen_on_ui_thread(self) -> bytes | None:
+        if threading.current_thread() is threading.main_thread():
+            return self._grab_screen_hiding_dot()
+        done = threading.Event()
+        holder: list[bytes | None] = []
+        self._post("capture_screen", holder, done)
+        if not done.wait(8):
+            log.warning("The screenshot did not finish")
+            return None
+        return holder[0] if holder else None
+
+    def _on_capture_screen(self, holder: list, done: threading.Event) -> None:
+        try:
+            holder.append(self._grab_screen_hiding_dot())
+        finally:
+            done.set()
+
+    def _auto_keyboard_worker(self, job: int, hwnd: int) -> None:
         """Read and replace a box the usual way when it is not a plain text control.
 
         Chat apps such as WhatsApp draw their own message box. Selecting that
@@ -437,24 +471,31 @@ class App:
             if hwnd:
                 winapi.focus_window(hwnd)
                 time.sleep(0.15)
+            missed = None
             try:
                 cap = capture.grab_text(
                     self.settings.auto_select_all, self.settings.blocked_apps, self.settings.restore_clipboard,
                 )
                 draft = cap.text
-            except capture.CaptureError:
-                if not image:
-                    raise
+            except capture.CaptureError as e:
+                missed = e
                 hwnd, proc, title = capture.target_info()
                 cap = capture.Capture(hwnd, proc, title, "", "all")
                 draft = ""
+            log.info("Copied %s characters from the box", len(draft))
+            if capture.is_placeholder(draft):
+                if missed and str(missed) != capture.EMPTY_BOX_MESSAGE:
+                    raise missed
+                self._post("fail", job, capture.EMPTY_BOX_MESSAGE)
+                return
+            image = self._image_for_draft(draft)
             res = llm.enhance_screen(
                 draft, image, self.settings.providers, window_title=cap.title,
                 timeout=max(self.settings.timeout_seconds, 45),
             )
             how = self._paste_back(cap.hwnd or hwnd, res.text)
             self.cap = cap
-            self._post("pasted", job, how)
+            self._post("auto_done", job, how, res, draft, cap.hwnd or hwnd, None)
         except (capture.CaptureError, winapi.ClipboardBusy) as e:
             self._post("fail", job, str(e))
         except llm.LLMError as e:
@@ -463,7 +504,7 @@ class App:
             log.exception("auto prompt keyboard path failed")
             self._post("fail", job, f"Couldn't rewrite the prompt: {e}")
 
-    def _auto_worker(self, job: int, element, labels, kind: str, image: bytes | None) -> None:
+    def _auto_worker(self, job: int, element, labels, kind: str) -> None:
         from .agent_text import AgentTextError, read_agent_text, write_agent_text
         from .watch import COINIT_MULTITHREADED, _release, ole32
 
@@ -472,9 +513,15 @@ class App:
             try:
                 text = read_agent_text(element, labels, kind)
             except AgentTextError as e:
-                if not image or "Nothing to rewrite" not in str(e):
+                if "Nothing to rewrite" not in str(e):
                     raise
                 text = ""
+            log.info("Read %s characters from the box (%s)", len(text), kind)
+            # Many apps expose the grey hint ("Ask anything") as the box text; that is not a draft.
+            if capture.is_placeholder(text, getattr(labels, "name", "")):
+                self._post("fail", job, capture.EMPTY_BOX_MESSAGE)
+                return
+            image = self._image_for_draft(text)
             title = winapi.window_title(self._dot_hwnd) if self._dot_hwnd else ""
             res = llm.enhance_screen(
                 text, image, self.settings.providers, window_title=title,
@@ -484,7 +531,8 @@ class App:
             log.info("Auto prompt %s", how)
             if how != "written":
                 how = self._paste_back(self._dot_hwnd, res.text)
-            self._post("auto_done", job, how, res)
+            self._post("auto_done", job, how, res, text, self._dot_hwnd, element)
+            element = None
         except AgentTextError as e:
             self._post("fail", job, str(e))
         except llm.LLMError as e:
@@ -511,17 +559,109 @@ class App:
             )
         return "written" if how == "pasted" else how
 
-    def _on_auto_done(self, job: int, how: str, res: llm.Result) -> None:
+    def _on_auto_done(self, job: int, how: str, res: llm.Result, original: str, hwnd: int,
+                      element=None) -> None:
         if job != self.job:
+            self._release_undo_element(element)
             return
         self.busy = False
         self._close_capture_uia()
         self.last_result = res
         self.toast.hide()
-        if how == "copied":
-            self.toast.show("✓ Improved prompt copied — press Ctrl+V to paste it.", kind="ok", duration_ms=4000)
+        self._restore = (int(hwnd or 0), original, int(getattr(self, "_input_hwnd", 0) or 0))
+        self._release_undo_element(self._undo_element)
+        self._undo_element = element
+        log.info("Undo armed with %s characters of the original draft", len(original or ""))
+        self._show_undo_arrow()
+        undo_key = _pretty(self.settings.hotkey_undo) if self.settings.hotkey_undo.strip() else ""
+        hint = f"Press {undo_key} to undo." if undo_key else "Click Undo to put your text back."
+        self.toast.show(f"Prompt improved. {hint}", kind="ok", duration_ms=3500)
+
+    def _release_undo_element(self, element) -> None:
+        if not element:
+            return
+        from .watch import _release
+
+        _release(element)
+
+    def _show_undo_arrow(self) -> None:
+        show = self._restore is not None and self.settings.auto_prompt
+        if self.dot:
+            self.dot.set_undo(show)
+        if show:
+            self._arm_enter()
         else:
-            self.toast.show("✓ Prompt improved", kind="ok", duration_ms=1800)
+            self._disarm_enter()
+
+    def _arm_enter(self) -> None:
+        if self._enter is not None:
+            return
+        from .watch import EnterSignal
+
+        self._enter = EnterSignal(lambda: self._post("prompt_used"))
+        self._enter.start()
+
+    def _disarm_enter(self) -> None:
+        watcher = self._enter
+        self._enter = None
+        if watcher is not None:
+            watcher.stop()
+
+    def _on_prompt_used(self) -> None:
+        """Enter puts the user's own text back into the same box."""
+        self._on_undo()
+
+    def _on_undo(self) -> None:
+        if self.busy or not self._restore:
+            return
+        hwnd, text, focus = self._restore
+        element = self._undo_element
+        self._restore = None
+        self._undo_element = None
+        self._disarm_enter()
+        if self.dot:
+            self.dot.set_undo(False)
+        self.busy = True
+        self.busy_since = time.monotonic()
+        self.job += 1
+        self.toast.show("Restoring your text…", duration_ms=0)
+        self._thread(self._undo_worker, self.job, hwnd, text, focus, element)
+
+    def _undo_worker(self, job: int, hwnd: int, text: str, focus: int, element) -> None:
+        from .agent_text import restore_element_text
+        from .watch import COINIT_MULTITHREADED, _release, ole32
+
+        ole32.CoInitializeEx(None, COINIT_MULTITHREADED)
+        try:
+            how = restore_element_text(element, text) if element is not None else "copied"
+            if how != "written":
+                winapi.focus_control(hwnd, focus)
+                time.sleep(0.2)
+                if winapi.replace_edit_text(focus, text):
+                    how = "written"
+                else:
+                    how = self._paste_back(hwnd, text)
+            log.info("Undo %s (%s characters)", how, len(text or ""))
+            self._post("undo_done", job, how, hwnd, text, focus)
+        except Exception:
+            log.exception("undo failed")
+            self._post("undo_done", job, "copied", hwnd, text, focus)
+        finally:
+            _release(element)
+            ole32.CoUninitialize()
+
+    def _on_undo_done(self, job: int, how: str, hwnd: int, text: str, focus: int) -> None:
+        if job != self.job:
+            return
+        self.busy = False
+        self.toast.hide()
+        if how == "copied":
+            self._restore = (hwnd, text, focus)
+            self._show_undo_arrow()
+            self.toast.show("Your text is on the clipboard. Click the box and press Ctrl+V.",
+                            kind="error", duration_ms=4000)
+            return
+        self.toast.show("Your text is back", kind="ok", duration_ms=1800)
 
     def _on_auto_no(self) -> None:
         if self.confirm:
@@ -538,6 +678,7 @@ class App:
         self.style = new.default_style
         self._build_popup()
         self._sync_watcher()
+        self._start_hotkeys()
         n = len(new.usable_providers)
         self.toast.show(f"Config reloaded · {n} provider(s) ready", kind="ok" if n else "error")
 
@@ -548,42 +689,40 @@ class App:
             self.key_window.win.focus_force()
             return
         self.key_window = KeySetupWindow(self.root,
-                                         on_submit=lambda keys: self._thread(self._keys_worker, keys),
+                                         on_submit=lambda spec: self._thread(self._keys_worker, spec),
                                          on_close=self._on_key_window_closed)
 
     def _on_key_window_closed(self) -> None:
         self.key_window = None
 
-    def _keys_worker(self, keys: dict[str, str]) -> None:
-        """Try each key with one tiny request before saving it."""
+    def _keys_worker(self, spec: dict[str, str]) -> None:
+        """Try this provider with one tiny request before saving it."""
         errors = []
-        by_name = {p.name: p for p in self.settings.providers}
-        for name, key in keys.items():
-            if not key:
-                continue
-            p = by_name.get(name)
-            if p is None:
-                errors.append(f"{name}: missing from config.toml")
-                continue
-            try:
-                llm.enhance("say hi", [dataclasses.replace(p, api_key=key)], timeout=20)
-            except llm.LLMError as e:
-                msg = str(e).replace("All providers failed:\n- ", "").replace(" Check the key in config.toml.", "")
-                errors.append(msg)
-        self._post("keys_tested", keys, errors)
+        probe = llm.Provider(
+            name=spec["name"],
+            base_url=spec["base_url"],
+            model=spec["model"],
+            api_key=spec.get("api_key", ""),
+        )
+        try:
+            llm.enhance("say hi", [probe], timeout=20)
+        except llm.LLMError as e:
+            msg = str(e).replace("All providers failed:\n- ", "").replace(" Check the key in config.toml.", "")
+            errors.append(msg)
+        self._post("keys_tested", spec, errors)
 
-    def _on_keys_tested(self, keys: dict[str, str], errors: list[str]) -> None:
+    def _on_keys_tested(self, spec: dict[str, str], errors: list[str]) -> None:
         if not self.key_window:
             return
         if errors:
             self.key_window.show_status("That key didn't work:\n" + "\n".join(errors), error=True)
             return
         try:
-            save_provider_keys(keys)
+            save_provider(spec)
         except (ConfigError, OSError) as e:
             self.key_window.show_status(f"Couldn't save: {e}", error=True)
             return
-        log.info("Saved API keys for: %s", ", ".join(n for n, k in keys.items() if k))
+        log.info("Saved API provider: %s", spec.get("name", ""))
         self.key_window.close()
         self._on_reload()
         self.toast.show("All set. Click the dot when your draft is ready.",
@@ -614,7 +753,10 @@ class App:
             self._post("fail", self.job, f"Couldn't open {path}: {e}")
 
     def _shutdown(self) -> None:
+        self._release_undo_element(self._undo_element)
+        self._undo_element = None
         self._hide_dot()
+        self._disarm_enter()
         self._stop_watcher()
         if self.listener:
             self.listener.stop()

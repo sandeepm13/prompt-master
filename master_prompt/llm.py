@@ -121,7 +121,7 @@ def enhance_screen(draft: str, image_jpeg: bytes | None, providers: list[Provide
         raise LLMError("There is no text to improve.")
     usable = [p for p in providers if p.usable]
     if not usable:
-        raise LLMError("No API key found. Open config.toml (tray icon > Open config) and add your Groq or Gemini key.")
+        raise LLMError("No API key found. Open API keys from the tray icon and add one.")
     if image_jpeg:
         usable = _vision_first(provider_for_screen(p, has_image=True) for p in usable)
     messages = build_screen_messages(draft, image_jpeg, window_title)
@@ -152,7 +152,7 @@ def enhance(draft: str, providers: list[Provider], *, style: str = "enhance",
         raise LLMError("There is no text to improve.")
     usable = [p for p in providers if p.usable]
     if not usable:
-        raise LLMError("No API key found. Open config.toml (tray icon > Open config) and add your Groq or Gemini key.")
+        raise LLMError("No API key found. Open API keys from the tray icon and add one.")
 
     messages = build_messages(draft, style, custom_styles)
     errors: list[str] = []

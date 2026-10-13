@@ -174,6 +174,28 @@ Return only the enhanced prompt inside <enhanced_prompt></enhanced_prompt> tags.
 """
 
 
+_SCREEN_POINTERS = (
+    "this", "that", "these", "those", "here", "above", "below",
+    "screenshot", "screen", "error", "page", "shown",
+)
+
+
+def draft_needs_screen(draft: str) -> bool:
+    """A photo is worth the credits only when the draft cannot stand on its own.
+
+    An empty box needs the screen. A short draft that points at the screen
+    ("fix this", "this error") needs it too. A draft of 12 words or more is
+    sent as text, which uses the cheaper model.
+    """
+    words = draft.split()
+    if not words:
+        return True
+    if len(words) >= 12:
+        return False
+    folded = {word.strip(".,!?;:\"'()[]").casefold() for word in words}
+    return any(pointer in folded for pointer in _SCREEN_POINTERS)
+
+
 def build_screen_messages(draft: str, image_jpeg: bytes | None, window_title: str = "") -> list[dict]:
     """System prompt plus the draft, the window title, and, when present, the screenshot."""
     import base64
@@ -183,6 +205,8 @@ def build_screen_messages(draft: str, image_jpeg: bytes | None, window_title: st
     if title:
         pieces.append(f"<window_title>\n{title}\n</window_title>")
     pieces.append(f"<draft>\n{draft.strip()}\n</draft>")
+    if not image_jpeg:
+        pieces.append("No screenshot is attached. Enhance the draft on its own.")
     user = "\n".join(pieces)
     if image_jpeg:
         url = "data:image/jpeg;base64," + base64.b64encode(image_jpeg).decode("ascii")
