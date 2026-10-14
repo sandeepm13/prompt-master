@@ -106,16 +106,18 @@ document.addEventListener('DOMContentLoaded', () => {
   if (downloadBtn && downloadCount) {
     let count = 0;
     
-    // Fetch live download count from GitHub Releases API
-    fetch('https://api.github.com/repos/sandeepm13/prompt-master/releases/tags/downloads')
+    // Fetch live download count from GitHub Releases API: installer downloads across all releases
+    fetch('https://api.github.com/repos/sandeepm13/prompt-master/releases')
       .then(res => res.json())
-      .then(data => {
-        if (data && data.assets && data.assets.length > 0) {
-          count = data.assets[0].download_count || 0;
-          downloadCount.textContent = count + (count === 1 ? ' download' : ' downloads');
-        } else {
-          downloadCount.textContent = '0 downloads';
+      .then(releases => {
+        if (Array.isArray(releases)) {
+          releases.forEach(release => {
+            (release.assets || []).forEach(asset => {
+              if (asset.name.endsWith('.exe')) count += asset.download_count || 0;
+            });
+          });
         }
+        downloadCount.textContent = count + (count === 1 ? ' download' : ' downloads');
       })
       .catch(e => {
         downloadCount.style.display = 'none';
