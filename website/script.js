@@ -138,29 +138,64 @@ document.addEventListener('DOMContentLoaded', () => {
   const downloadCount = document.getElementById('download-count');
   
   if (downloadBtn && downloadCount) {
-    let count = 0;
-    
-    // Fetch live download count from GitHub Releases API: installer downloads across all releases
-    fetch('https://api.github.com/repos/sandeepm13/prompt-master/releases')
+    const getStoredCount = () => {
+      try {
+        return parseInt(localStorage.getItem('pm_download_count') || '0', 10) || 0;
+      } catch (e) {
+        return 0;
+      }
+    };
+
+    const setStoredCount = (val) => {
+      try {
+        localStorage.setItem('pm_download_count', String(val));
+      } catch (e) {}
+    };
+
+    const formatCount = (num) => `${num} ${num === 1 ? 'download' : 'downloads'}`;
+
+    // Initialize with stored count if available to avoid "..." flash or reverting
+    let count = getStoredCount();
+    if (count > 0) {
+      downloadCount.textContent = formatCount(count);
+    }
+
+    // Fetch live download count with cache-busting to avoid stale browser/CDN responses
+    fetch(`https://api.github.com/repos/sandeepm13/prompt-master/releases?_t=${Date.now()}`, {
+      cache: 'no-store',
+      headers: { 'Accept': 'application/vnd.github.v3+json' }
+    })
       .then(res => res.json())
       .then(releases => {
         if (Array.isArray(releases)) {
+          let apiTotal = 0;
           releases.forEach(release => {
             (release.assets || []).forEach(asset => {
-              if (asset.name.endsWith('.exe')) count += asset.download_count || 0;
+              if (asset.name && asset.name.endsWith('.exe')) {
+                apiTotal += asset.download_count || 0;
+              }
             });
           });
+          // Monotonic: count never drops backwards even if GitHub backend has not yet updated
+          count = Math.max(apiTotal, count, getStoredCount());
+          setStoredCount(count);
+          downloadCount.textContent = formatCount(count);
         }
-        downloadCount.textContent = count + (count === 1 ? ' download' : ' downloads');
       })
-      .catch(e => {
-        downloadCount.style.display = 'none';
+      .catch(() => {
+        // If fetch fails but we have a stored count, keep showing it
+        if (count > 0) {
+          downloadCount.textContent = formatCount(count);
+        } else {
+          downloadCount.style.display = 'none';
+        }
       });
 
-    // Optimistically update count on click
+    // Optimistically update and persist immediately on click
     downloadBtn.addEventListener('click', () => {
-      count++;
-      downloadCount.textContent = count + (count === 1 ? ' download' : ' downloads');
+      count = Math.max(count, getStoredCount()) + 1;
+      setStoredCount(count);
+      downloadCount.textContent = formatCount(count);
     });
   }
 });
