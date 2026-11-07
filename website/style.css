@@ -328,6 +328,7 @@ a:focus-visible {
     border-radius: 16px;
     overflow: hidden;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
+    background: #dfe4f2 url('poster.jpg') center / cover no-repeat;
     flex-shrink: 0;
   }
 
@@ -472,6 +473,7 @@ a:focus-visible {
     border-radius: 16px;
     overflow: hidden;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+    background: #dfe4f2 url('poster.jpg') center / cover no-repeat;
   }
 
   .footer-background video {

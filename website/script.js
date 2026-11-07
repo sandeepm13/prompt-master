@@ -41,6 +41,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const video = document.getElementById('bg-video');
   if (!video) return;
   
+  // Explicitly set properties for iOS WebKit inline autoplay
+  video.muted = true;
+  video.defaultMuted = true;
+  video.playsInline = true;
+
   let frame = 0;
   let desiredTime = 0;
   let pointer = null;
@@ -80,18 +85,38 @@ document.addEventListener('DOMContentLoaded', () => {
     updateTarget();
   };
 
+  const playVideo = () => {
+    video.loop = true;
+    const p = video.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => {
+        // If autoplay was blocked (e.g. Low Power Mode on iOS), play on first user interaction
+        const unlock = () => {
+          video.play().catch(() => {});
+        };
+        ['touchstart', 'touchend', 'scroll', 'click'].forEach(evt => {
+          window.addEventListener(evt, unlock, { once: true, passive: true });
+        });
+      });
+    }
+  };
+
   const ready = () => {
-    video.loop = mobile.matches;
-    if (mobile.matches && !reducedMotion.matches) {
-      video.play().catch(() => {});
+    if (mobile.matches) {
+      if (!reducedMotion.matches) {
+        playVideo();
+      }
     } else {
       video.pause();
-      if (!mobile.matches) { updateTarget(); schedule(); }
+      video.loop = false;
+      updateTarget();
+      schedule();
     }
   };
 
   video.addEventListener('seeked', schedule);
   video.addEventListener('loadeddata', ready);
+  video.addEventListener('canplay', ready);
   if (mobile.addEventListener) {
     mobile.addEventListener('change', ready);
   } else if (mobile.addListener) {
@@ -106,7 +131,8 @@ document.addEventListener('DOMContentLoaded', () => {
   window.addEventListener('resize', updateTarget);
   window.addEventListener('scroll', updateTarget, { passive: true });
 
-  if (video.readyState >= 2) ready();
+  // Run ready immediately to trigger playVideo without deadlock
+  ready();
 
   const downloadBtn = document.getElementById('download-btn');
   const downloadCount = document.getElementById('download-count');
