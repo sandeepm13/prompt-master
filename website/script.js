@@ -45,7 +45,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let desiredTime = 0;
   let pointer = null;
   let disposed = false;
-  const mobile = window.matchMedia('(max-width: 700px)');
+  const mobile = window.matchMedia('(max-width: 1024px)');
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
   const seek = () => {
@@ -92,8 +92,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
   video.addEventListener('seeked', schedule);
   video.addEventListener('loadeddata', ready);
-  mobile.addEventListener('change', ready);
-  reducedMotion.addEventListener('change', ready);
+  if (mobile.addEventListener) {
+    mobile.addEventListener('change', ready);
+  } else if (mobile.addListener) {
+    mobile.addListener(ready);
+  }
+  if (reducedMotion.addEventListener) {
+    reducedMotion.addEventListener('change', ready);
+  } else if (reducedMotion.addListener) {
+    reducedMotion.addListener(ready);
+  }
   window.addEventListener('pointermove', move, { passive: true });
   window.addEventListener('resize', updateTarget);
   window.addEventListener('scroll', updateTarget, { passive: true });

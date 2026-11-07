@@ -6,8 +6,10 @@ config.toml
 data/
 build/
 dist/
+dist_old*/
 *.spec
 docs/
 .cursor/
 .claude/
 *.bat
+*.log
