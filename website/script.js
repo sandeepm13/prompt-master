@@ -160,24 +160,16 @@ document.addEventListener('DOMContentLoaded', () => {
       downloadCount.textContent = formatCount(count);
     }
 
-    // Fetch live download count with cache-busting to avoid stale browser/CDN responses
-    fetch(`https://api.github.com/repos/sandeepm13/prompt-master/releases?_t=${Date.now()}`, {
-      cache: 'no-store',
-      headers: { 'Accept': 'application/vnd.github.v3+json' }
-    })
-      .then(res => res.json())
-      .then(releases => {
-        if (Array.isArray(releases)) {
-          let apiTotal = 0;
-          releases.forEach(release => {
-            (release.assets || []).forEach(asset => {
-              if (asset.name && asset.name.endsWith('.exe')) {
-                apiTotal += asset.download_count || 0;
-              }
-            });
-          });
-          // Monotonic: count never drops backwards even if GitHub backend has not yet updated
-          count = Math.max(apiTotal, count, getStoredCount());
+    // Live total from /api/count: GitHub release downloads + downloads served by this site
+    fetch('/api/count', { cache: 'no-store' })
+      .then(res => {
+        if (!res.ok) throw new Error(`count ${res.status}`);
+        return res.json();
+      })
+      .then(data => {
+        if (typeof data.count === 'number') {
+          // Monotonic: count never drops backwards even if the edge cache is a minute behind
+          count = Math.max(data.count, count, getStoredCount());
           setStoredCount(count);
           downloadCount.textContent = formatCount(count);
         }
