@@ -19,6 +19,7 @@ import os
 import sys
 import time
 from ctypes import wintypes
+from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -487,6 +488,8 @@ def pin_overlay(hwnd: int) -> None:
 
 DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND = 33, 2
 DWMWA_BORDER_COLOR = 34
+DWMWA_SYSTEMBACKDROP_TYPE = 38
+DWMSBT_TRANSIENTWINDOW = 3  # Acrylic blur
 
 
 def round_corners(hwnd: int, border: tuple[int, int, int] | None = None) -> bool:
@@ -505,6 +508,72 @@ def round_corners(hwnd: int, border: tuple[int, int, int] | None = None) -> bool
         colour = wintypes.DWORD(r | (g << 8) | (b << 16))
         dwm.DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, ctypes.byref(colour), 4)
     return True
+
+
+def enable_acrylic(hwnd: int) -> bool:
+    """Windows 11 translucent acrylic glass backdrop."""
+    try:
+        dwm = ctypes.WinDLL("dwmapi")
+        backdrop = ctypes.c_int(DWMSBT_TRANSIENTWINDOW)
+        return dwm.DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, ctypes.byref(backdrop), 4) == 0
+    except Exception:
+        return False
+
+
+class ACCENT_POLICY(ctypes.Structure):
+    _fields_ = [
+        ("AccentState", ctypes.c_int),
+        ("AccentFlags", ctypes.c_int),
+        ("GradientColor", ctypes.c_int),
+        ("AnimationId", ctypes.c_int),
+    ]
+
+
+class WINDOWCOMPOSITIONATTRIBDATA(ctypes.Structure):
+    _fields_ = [
+        ("Attrib", ctypes.c_int),
+        ("pvData", ctypes.c_void_p),
+        ("cbData", ctypes.c_size_t),
+    ]
+
+
+def apply_acrylic_blur(hwnd: int, tint_rgba: tuple[int, int, int, int] = (24, 23, 28, 210)) -> bool:
+    """
+    Applies hardware-accelerated Acrylic frosted glass backdrop.
+    Child widgets (buttons, cards) remain 100% solid and opaque with zero text bleed.
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        r, g, b, a = tint_rgba
+        tint = (a << 24) | (b << 16) | (g << 8) | r
+        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
+        policy = ACCENT_POLICY(4, 2, tint, 0)  # ACCENT_ENABLE_ACRYLICBLURBEHIND
+        data = WINDOWCOMPOSITIONATTRIBDATA(19, ctypes.cast(ctypes.byref(policy), ctypes.c_void_p), ctypes.sizeof(policy))
+        if user32.SetWindowCompositionAttribute(hwnd, ctypes.byref(data)):
+            return True
+    except Exception:
+        pass
+    return enable_acrylic(hwnd)
+
+
+def load_app_fonts(fonts_dir: Path | None = None) -> None:
+    """Register custom TTF/OTF fonts (Inter, Plus Jakarta Sans) for this process."""
+    if not IS_WINDOWS:
+        return
+    if fonts_dir is None:
+        fonts_dir = Path(__file__).resolve().parent.parent / "assets" / "fonts"
+    if not fonts_dir.is_dir():
+        return
+    FR_PRIVATE = 0x10
+    gdi = ctypes.WinDLL("gdi32", use_last_error=True)
+    for ext in ("*.otf", "*.ttf"):
+        for path in fonts_dir.glob(ext):
+            try:
+                gdi.AddFontResourceExW(str(path.resolve()), FR_PRIVATE, 0)
+            except Exception:
+                pass
 
 
 # --------------------------------------------------------------------------

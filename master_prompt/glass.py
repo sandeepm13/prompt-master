@@ -15,12 +15,12 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 SS = 3  # supersampling
 
-# Glass colours (RGBA)
-DOT_TOP = (168, 156, 255, 205)
-DOT_BOTTOM = (98, 78, 240, 235)
-PILL_TOP = (46, 48, 60, 180)
-PILL_BOTTOM = (24, 25, 31, 205)
-GLOW = (124, 108, 255)
+# Glass colours (RGBA) - Royal Amethyst palette matching primary button
+DOT_TOP = (168, 85, 247, 215)
+DOT_BOTTOM = (88, 28, 135, 245)
+PILL_TOP = (38, 30, 48, 190)
+PILL_BOTTOM = (20, 16, 26, 215)
+GLOW = (147, 51, 234)
 TEXT = (232, 232, 234)
 
 
@@ -150,7 +150,7 @@ def render(f: Frame) -> Image.Image:
         t = f.ripple
         rr = (f.size / 2) * (1 + 0.55 * t)
         _paint(hi, _ring(big, S(cx - rr, cy - rr, cx + rr, cy + rr), SS * (2.2 - 1.6 * t)),
-               (190, 180, 255, 255), alpha=(1 - t) ** 2 * 0.9)
+               (192, 132, 252, 255), alpha=(1 - t) ** 2 * 0.9)
 
     if pill:
         x, y, w, h = pill
@@ -182,7 +182,7 @@ def render(f: Frame) -> Image.Image:
         box = S(cx - r, cy - r, cx + r, cy + r)
         body, d = _mask(big)
         d.ellipse(box, fill=255)
-        top = tuple(int(_lerp(a, b, f.hover)) for a, b in zip(DOT_TOP, (186, 176, 255, 225)))
+        top = tuple(int(_lerp(a, b, f.hover)) for a, b in zip(DOT_TOP, (192, 132, 252, 235)))
         _paint(hi, body, top, DOT_BOTTOM)
 
         sheen, d = _mask(big)  # curved highlight over the top half

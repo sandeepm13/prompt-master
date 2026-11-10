@@ -21,24 +21,35 @@ from .motion import Motion
 IS_WINDOWS = sys.platform == "win32"
 if IS_WINDOWS:
     from . import winapi
+    winapi.load_app_fonts()
 
-# Colours (dark glass theme, matching the dot)
-BG = "#1b1c22"         # window surface
-BG_2 = "#24252d"       # cards and text fields
-BG_3 = "#30323c"       # hover
-BORDER = "#34363f"
-FG = "#ececf1"
-FG_DIM = "#a0a2ad"
-FG_FAINT = "#6e707c"
-ACCENT = "#7c6cff"
-ACCENT_HOVER = "#8f81ff"
-ERROR = "#ff6b6b"
-FONT = ("Segoe UI", 10)
-FONT_TEXT = ("Segoe UI", 11)
-FONT_SMALL = ("Segoe UI", 9)
-FONT_TINY = ("Segoe UI Semibold", 8)
-FONT_TITLE = ("Segoe UI Semibold", 11)
-FONT_BUTTON = ("Segoe UI Semibold", 10)
+# Colours: Deep Obsidian Glass Canvas (matching reference rgba(18, 14, 24) - NO purple spread across canvas)
+BG = "#120e18"              # Deep obsidian glass canvas
+BG_2 = "#1c1824"            # Elevated inner card canvas
+BG_3 = "#262230"            # Raised / hover card surface
+BORDER = "#2f283d"          # Soft lavender-tinted obsidian rim (rgba(216, 180, 254, 0.22))
+BORDER_HIGHLIGHT = "#443b59" # Specular rim
+BORDER_FOCUS = "#7c3aed"    # Active focus border
+FG = "#f4f4f7"              # Crisp high-contrast text
+FG_DIM = "#a2a1ad"          # Clean secondary text
+FG_FAINT = "#686775"        # Subtle faint label text
+
+# Accent colors (Purple is ONLY on buttons & interactive accents)
+ACCENT = "#c084fc"          # Lavender link / context accent
+ACCENT_HOVER = "#e9d5ff"    # Soft Lilac hover
+ACCENT_PURPLE = "#a855f7"   # Ready status dot (●)
+ERROR = "#f87171"
+
+# Typography: Inter (Primary Font) + Plus Jakarta Sans (Buttons & Capsules)
+FONT_FAMILY = "Inter"
+FONT_FAMILY_BTN = "Plus Jakarta Sans"
+
+FONT = (FONT_FAMILY, 10)
+FONT_TEXT = (FONT_FAMILY, 11)
+FONT_SMALL = (FONT_FAMILY, 9)
+FONT_TINY = (FONT_FAMILY, 8, "bold")
+FONT_TITLE = (FONT_FAMILY, 11, "bold")
+FONT_BUTTON = (FONT_FAMILY_BTN, 10, "bold")
 
 
 def _px(widget: tk.Misc, n: float) -> int:
@@ -47,8 +58,19 @@ def _px(widget: tk.Misc, n: float) -> int:
 
 
 def _rgb(colour: str) -> tuple[int, int, int]:
-    colour = colour.lstrip("#")
-    return int(colour[0:2], 16), int(colour[2:4], 16), int(colour[4:6], 16)
+    if not colour:
+        return (24, 23, 28)
+    if isinstance(colour, str) and colour.startswith("#"):
+        c = colour.lstrip("#")
+        if len(c) == 3:
+            return int(c[0] * 2, 16), int(c[1] * 2, 16), int(c[2] * 2, 16)
+        if len(c) >= 6:
+            return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+    try:
+        from PIL import ImageColor
+        return ImageColor.getrgb(colour)[:3]
+    except Exception:
+        return (24, 23, 28)
 
 
 def _mix(a: str, b: str, t: float) -> str:
@@ -56,26 +78,101 @@ def _mix(a: str, b: str, t: float) -> str:
     return "#%02x%02x%02x" % tuple(round(x + (y - x) * t) for x, y in zip(_rgb(a), _rgb(b)))
 
 
+def _rounded_gradient(width: int, height: int, radius: float, top_colour: str, bottom_colour: str,
+                      bg: str, outline: str | None = None, specular: float = 0.5,
+                      bottom_bevel: str | None = None, outline_width: float = 1) -> ImageTk.PhotoImage:
+    """
+    Renders a hardware-smooth rounded rectangle with a vertical linear gradient,
+    a specular light bevel along the top edge, and an optional 3D cushion shadow at the bottom.
+    Downsampled with Lanczos supersampling (3x) for pristine macOS-quality glass buttons.
+    """
+    ss = 3
+    w_ss, h_ss = max(1, width * ss), max(1, height * ss)
+    rad_ss = radius * ss
+
+    img = Image.new("RGBA", (w_ss, h_ss), (*_rgb(bg), 255))
+    mask = Image.new("L", (w_ss, h_ss), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w_ss - 1, h_ss - 1), radius=rad_ss, fill=255)
+
+    top_rgb = _rgb(top_colour)
+    bot_rgb = _rgb(bottom_colour)
+    if top_rgb == bot_rgb:
+        fill_img = Image.new("RGBA", (w_ss, h_ss), (*top_rgb, 255))
+    else:
+        grad = Image.linear_gradient("L").resize((w_ss, h_ss))
+        top_img = Image.new("RGB", (w_ss, h_ss), top_rgb)
+        bot_img = Image.new("RGB", (w_ss, h_ss), bot_rgb)
+        fill_img = Image.composite(bot_img, top_img, grad).convert("RGBA")
+
+    draw_fill = ImageDraw.Draw(fill_img)
+
+    # Top specular reflection highlight (Cluely / macOS Sonoma glass highlight)
+    if specular > 0.01 and h_ss > 6 * ss:
+        spec_alpha = int(255 * min(1.0, specular))
+        inset = max(rad_ss * 0.45, 2 * ss)
+        draw_fill.line([(inset, ss), (w_ss - 1 - inset, ss)], fill=(255, 255, 255, spec_alpha), width=ss)
+
+    # Bottom 3D cushion shadow bevel
+    if bottom_bevel and h_ss > 6 * ss:
+        inset = max(rad_ss * 0.45, 2 * ss)
+        draw_fill.line([(inset, h_ss - 1 - ss), (w_ss - 1 - inset, h_ss - 1 - ss)],
+                       fill=(*_rgb(bottom_bevel), 180), width=ss)
+
+    img.paste(fill_img, (0, 0), mask)
+
+    # Outline
+    if outline:
+        draw_out = ImageDraw.Draw(img)
+        draw_out.rounded_rectangle((0, 0, w_ss - 1, h_ss - 1), radius=rad_ss,
+                                   outline=(*_rgb(outline), 255), width=max(1, round(outline_width * ss)))
+
+    return ImageTk.PhotoImage(img.resize((width, height), Image.LANCZOS).convert("RGB"))
+
+
+def _rounded_card(width: int, height: int, radius: float, fill: str, bg: str,
+                  outline: str | None = None, outline_width: float = 1,
+                  specular: bool = True) -> ImageTk.PhotoImage:
+    """Glass card canvas: deep obsidian with subtle specular reflection at the top rim."""
+    ss = 3
+    w_ss, h_ss = max(1, width * ss), max(1, height * ss)
+    img = Image.new("RGBA", (w_ss, h_ss), (*_rgb(bg), 255))
+    draw = ImageDraw.Draw(img)
+    rad_ss = radius * ss
+    box = (0, 0, w_ss - 1, h_ss - 1)
+
+    # Base card
+    draw.rounded_rectangle(box, radius=rad_ss, fill=(*_rgb(fill), 255))
+
+    # Specular top highlight (macOS Sonoma / Cluely obsidian glass top edge)
+    if specular and h_ss > 10 * ss:
+        inset = max(rad_ss * 0.35, 2 * ss)
+        draw.line([(inset, ss), (w_ss - 1 - inset, ss)], fill=(255, 255, 255, 45), width=ss)
+
+    # Soft lavender outline
+    if outline:
+        draw.rounded_rectangle(box, radius=rad_ss, outline=(*_rgb(outline), 255),
+                               width=max(1, round(outline_width * ss)))
+
+    return ImageTk.PhotoImage(img.resize((width, height), Image.LANCZOS).convert("RGB"))
+
+
 def _rounded(width: int, height: int, radius: float, fill: str, bg: str, outline: str | None = None,
              outline_width: float = 1) -> ImageTk.PhotoImage:
     """A smooth rounded rectangle on a solid background, for canvas-drawn panels and buttons."""
-    ss = 3
-    img = Image.new("RGB", (width * ss, height * ss), _rgb(bg))
-    ImageDraw.Draw(img).rounded_rectangle(
-        (0, 0, width * ss - 1, height * ss - 1), radius=radius * ss, fill=_rgb(fill),
-        outline=_rgb(outline) if outline else None, width=round(outline_width * ss) if outline else 0)
-    return ImageTk.PhotoImage(img.resize((width, height), Image.LANCZOS))
+    return _rounded_card(width, height, radius, fill, bg, outline, outline_width, specular=False)
 
 
 def _frameless(win: tk.Toplevel) -> None:
-    """No title bar. Rounded corners and a thin border on Windows 11; a square border elsewhere."""
+    """No title bar. Translucent obsidian glass with DWM Acrylic and rounded corners on Windows 11."""
     win.overrideredirect(True)
     win.configure(bg=BG)
     rounded = False
     if IS_WINDOWS:
         win.update_idletasks()
         try:
-            rounded = winapi.round_corners(int(win.wm_frame(), 16), _rgb(BORDER))
+            hwnd = int(win.wm_frame(), 16)
+            rounded = winapi.round_corners(hwnd, _rgb(BORDER))
+            winapi.enable_acrylic(hwnd)
         except Exception:
             rounded = False
     if not rounded:
@@ -116,37 +213,69 @@ def _place_near_cursor(win: tk.Toplevel, width: int, height: int, offset: int = 
 
 class _Button(tk.Canvas):
     """
-    Rounded button, drawn smooth, with an animated hover and press.
-    kind: "primary" (accent), "secondary" (outlined) or "ghost" (no fill until hovered, e.g. the ✕).
+    Rounded glass button, drawn smooth with specular highlights and animated hover and press.
+    kind: "primary" (deep royal amethyst to midnight indigo gradient with 3D cushion shadow),
+          "secondary" (translucent obsidian glass pill with soft lavender rim),
+          or "ghost" (no fill until hovered, e.g. the ✕).
     """
 
-    _STYLES = {
-        # base fill, hover fill, text, outline
-        "primary": (ACCENT, ACCENT_HOVER, "#ffffff", None),
-        "secondary": (BG_2, BG_3, FG, BORDER),
-        "ghost": (None, BG_3, FG_DIM, None),
+    _GRADIENTS = {
+        # (top_idle, bottom_idle), (top_hover, bottom_hover), text_idle, text_hover, outline_idle, outline_hover, specular, bottom_bevel
+        "primary": (
+            ("#9b5ae4", "#682a9d"),  # Exact match to the luminous purple of the dot
+            ("#a86ef0", "#793aaf"),  # Elevated Luminous Violet hover
+            "#ffffff",               # Pure crisp white text
+            "#ffffff",
+            "#8149b1",               # Matching violet rim
+            "#ad83d4",               # Soft luminous hover rim
+            0.50,                    # Top specular highlight (glass reflection)
+            "#3e1660",               # Cushion shadow bevel
+        ),
+        "secondary": (
+            ("#24222a", "#1a1920"),  # Deep obsidian glass pill
+            ("#302e38", "#24222c"),  # Elevated glass hover
+            "#e9d5ff",               # Soft Lilac text
+            "#ffffff",               # Pure white hover
+            "#3a3745",               # Clean subtle rim
+            "#6b488a",               # Lavender hover rim
+            0.20,                    # Subtle specular reflection
+            "#100f14",
+        ),
+        "ghost": (
+            (None, None),
+            ("#282730", "#201f26"),
+            "#a2a1ad",
+            "#ffffff",
+            None,
+            "#3d3c48",
+            0.0,
+            None,
+        ),
     }
 
     def __init__(self, master, text: str, command: Callable[[], None], primary: bool = False, *,
-                 kind: str | None = None, square: int | None = None, font=FONT_BUTTON):
+                 kind: str | None = None, square: int | None = None, width: int | None = None,
+                 height: int | None = None, font=FONT_BUTTON):
         self._kind = kind or ("primary" if primary else "secondary")
         self._bg = master.cget("bg")
         self._font = font
+        h_default = 34
         if square:
-            width = height = _px(master, square)
+            w_px = h_px = _px(master, square)
         else:
-            width = tkfont.Font(master, font=font).measure(text) + _px(master, 32)
-            height = _px(master, 32)
-        super().__init__(master, width=width, height=height, bg=self._bg, highlightthickness=0, bd=0,
+            text_w = tkfont.Font(master, font=font).measure(text)
+            w_px = _px(master, width) if width is not None else (text_w + _px(master, 28))
+            h_px = _px(master, height) if height is not None else _px(master, h_default)
+        super().__init__(master, width=w_px, height=h_px, bg=self._bg, highlightthickness=0, bd=0,
                          cursor="hand2")
-        self._size = (width, height)
-        self._radius = height / 2 if square else _px(master, 9)
+        self._size = (w_px, h_px)
+        self._radius = h_px / 2 if square else _px(master, 9)
         self._command = command
         self._enabled = True
         self._inside = False
         self._photo = None
         self._image = self.create_image(0, 0, anchor="nw")
-        self._label = self.create_text(width / 2, height / 2, text=text, font=font)
+        self._label = self.create_text(w_px / 2, h_px / 2, text=text, font=font)
         self.motion = Motion(self, self._paint, hover=0.0, press=0.0)
         self.bind("<Enter>", self._enter)
         self.bind("<Leave>", self._leave)
@@ -155,18 +284,40 @@ class _Button(tk.Canvas):
         self._paint()
 
     def _paint(self) -> None:
-        base, hover, text, outline = self._STYLES[self._kind]
+        (t_idle, b_idle), (t_hov, b_hov), txt_idle, txt_hov, out_idle, out_hov, spec, bevel = self._GRADIENTS[self._kind]
         h, p = self.motion["hover"], self.motion["press"]
-        fill = _mix(base or self._bg, hover, h)
-        fill = _mix(fill, "#000000", 0.18 * p)
+
+        if t_idle is None:
+            # Ghost button (transparent until hovered)
+            if h > 0.02:
+                top = _mix(self._bg, t_hov, h)
+                bot = _mix(self._bg, b_hov, h)
+                outline = _mix(self._bg, out_hov, h)
+            else:
+                top = bot = self._bg
+                outline = None
+        else:
+            top = _mix(t_idle, t_hov, h)
+            bot = _mix(b_idle, b_hov, h)
+            outline = _mix(out_idle, out_hov, h) if (out_idle and out_hov) else out_idle
+
+        # Pressed state: deepen gradient
+        if p > 0.01:
+            top = _mix(top, "#000000", 0.25 * p)
+            bot = _mix(bot, "#000000", 0.35 * p)
+
         if not self._enabled:
-            fill = base or self._bg
-        if self._kind == "ghost":
-            text = _mix(text, FG, h)
-        self._photo = _rounded(*self._size, self._radius, fill, self._bg,
-                               _mix(outline, "#4a4c58", h) if outline else None)
+            top = bot = _mix(self._bg, FG_FAINT, 0.15)
+            outline = BORDER
+            spec = 0.0
+            bevel = None
+
+        text = _mix(txt_idle, txt_hov, h) if self._enabled else FG_FAINT
+
+        self._photo = _rounded_gradient(*self._size, self._radius, top, bot, self._bg,
+                                        outline=outline, specular=spec, bottom_bevel=bevel)
         self.itemconfigure(self._image, image=self._photo)
-        self.itemconfigure(self._label, fill=text if self._enabled else FG_FAINT)
+        self.itemconfigure(self._label, fill=text)
 
     def _enter(self, _e) -> None:
         self._inside = True
@@ -196,16 +347,17 @@ class _Button(tk.Canvas):
 
 
 class _Card(tk.Canvas):
-    """A rounded panel of a fixed width. Put widgets in .body; the panel grows to fit their height."""
+    """A rounded obsidian glass card of a fixed width. Put widgets in .body; the panel grows to fit their height."""
 
     def __init__(self, master, width: int, *, fill: str = BG_2, outline: str | None = BORDER,
-                 radius: int = 10, pad: tuple[int, int] = (12, 10)):
+                 radius: int = 10, pad: tuple[int, int] = (12, 10), specular: bool = True):
         self._bg = master.cget("bg")
         super().__init__(master, width=width, height=1, bg=self._bg, highlightthickness=0, bd=0)
         self._fill, self._outline = fill, outline
         self._radius = _px(master, radius)
         self._pad = (_px(master, pad[0]), _px(master, pad[1]))
         self._width = width
+        self._specular = specular
         self._photo = None
         self._image = self.create_image(0, 0, anchor="nw")
         self.body = tk.Frame(self, bg=fill)
@@ -228,7 +380,8 @@ class _Card(tk.Canvas):
 
     def _draw(self) -> None:
         if self._height:
-            self._photo = _rounded(self._width, self._height, self._radius, self._fill, self._bg, self._outline)
+            self._photo = _rounded_card(self._width, self._height, self._radius, self._fill, self._bg,
+                                        self._outline, specular=self._specular)
             self.itemconfigure(self._image, image=self._photo)
 
     def set_outline(self, colour: str | None) -> None:
@@ -268,13 +421,13 @@ class ConfirmPopup:
         self._anchor: tuple[int, int, int, int] | None = None
         self._pos = (0, 0)
         w = self.win = tk.Toplevel(root)
-        self.motion = Motion(w, self._apply_motion, alpha=1.0, slide=0.0)
+        self.motion = Motion(w, self._apply_motion, slide=0.0)
         w.withdraw()
-        w.title("Master Prompt")
+        w.title("dotix")
         w.attributes("-topmost", True)
         _frameless(w)
         pad = _px(w, 16)
-        width = _px(w, 320)
+        width = _px(w, 340)
 
         self._icon = _dot_icon(_px(w, 16))
         _header(w, "Regenerate this prompt?", self._no, self._icon).pack(fill="x", padx=(pad, _px(w, 10)),
@@ -284,14 +437,18 @@ class ConfirmPopup:
         card.pack(padx=pad, pady=(_px(w, 10), 0))
         body, wrap = card.body, card.inner_width
         self.context_box = tk.Frame(body, bg=BG_2)
-        tk.Label(self.context_box, text="WRITING IN", bg=BG_2, fg=FG_FAINT, font=FONT_TINY, anchor="w").pack(
-            fill="x")
+
+        tag_row = tk.Frame(self.context_box, bg=BG_2)
+        tag_row.pack(fill="x")
+        tk.Label(tag_row, text="●", bg=BG_2, fg=ACCENT_PURPLE, font=(FONT_FAMILY, 7)).pack(side="left", padx=(0, _px(w, 5)))
+        tk.Label(tag_row, text="WRITING IN", bg=BG_2, fg=FG_FAINT, font=FONT_TINY).pack(side="left")
+
         self.place = tk.Label(self.context_box, text="", bg=BG_2, fg=FG, font=FONT_BUTTON, anchor="w",
                               justify="left", wraplength=wrap)
         self.place.pack(fill="x", pady=(_px(w, 2), 0))
         self.detail = tk.Label(self.context_box, text="", bg=BG_2, fg=FG_DIM, font=FONT_SMALL, anchor="w",
                                justify="left", wraplength=wrap)
-        self.divider = tk.Frame(self.context_box, bg=BORDER, height=1)
+        self.divider = tk.Frame(self.context_box, bg="#2d2c36", height=1)
 
         row = tk.Frame(body, bg=BG_2)
         row.pack(fill="x", side="bottom")
@@ -306,8 +463,8 @@ class ConfirmPopup:
 
         bottom = tk.Frame(w, bg=BG)
         bottom.pack(fill="x", padx=pad, pady=(_px(w, 14), pad))
-        _Button(bottom, "Yes", self._yes, primary=True).pack(side="right")
-        _Button(bottom, "No", self._no).pack(side="right", padx=(0, _px(w, 8)))
+        _Button(bottom, "Dismiss", self._no, width=96, font=FONT_BUTTON).pack(side="left", padx=(0, _px(w, 8)))
+        _Button(bottom, "✨ Regenerate", self._yes, primary=True, width=204, font=FONT_BUTTON).pack(side="left", fill="x", expand=True)
         if IS_WINDOWS:
             w.update_idletasks()
             try:
@@ -367,23 +524,19 @@ class ConfirmPopup:
             self.win.geometry(f"{width}x{height}+{px + round(self.motion['slide'])}+{py}")
             self._present()
             return
-        # Opening: fade in and glide out of the dot.
+        # Opening: glide out smoothly beside the dot.
         towards_dot = 10 if px < x else -10
         m = self.motion
-        m.set("alpha", 0)
         m.set("slide", towards_dot)
-        self.win.attributes("-alpha", 0.0)
         self.win.geometry(f"{width}x{height}+{px + towards_dot}+{py}")
         self._present()
-        m.to("alpha", 1, 0.22, "power2.out")
-        m.to("slide", 0, 0.38, "power3.out")
+        m.to("slide", 0, 0.35, "power3.out")
 
     def _apply_motion(self) -> None:
         if not self.win.winfo_viewable():
             return
         px, py = self._pos
         self.win.geometry(f"+{px + round(self.motion['slide'])}+{py}")
-        self.win.attributes("-alpha", max(0.0, min(1.0, self.motion["alpha"])))
 
     def _size(self) -> tuple[int, int]:
         scale = max(1.0, self.win.winfo_fpixels("1i") / 96)
@@ -427,7 +580,7 @@ class NoteEditor:
         self._closed = False
         w = self.win = tk.Toplevel(root)
         w.withdraw()
-        w.title("My context")
+        w.title("dotix — My context")
         w.attributes("-topmost", True)
         _frameless(w)
         pad = _px(w, 18)
@@ -440,8 +593,9 @@ class NoteEditor:
 
         self.field = _Card(w, width - 2 * pad, radius=10, pad=(12, 10))
         self.field.pack(padx=pad, pady=(_px(w, 12), 0))
-        self.text = tk.Text(self.field.body, width=1, height=4, wrap="word", bg=BG_2, fg=FG, insertbackground=FG,
-                            selectbackground=ACCENT, selectforeground="#ffffff", relief="flat", bd=0,
+        self.text = tk.Text(self.field.body, width=1, height=4, wrap="word", bg=BG_2, fg=FG,
+                            insertbackground=ACCENT_PURPLE,
+                            selectbackground="#6d28d9", selectforeground="#ffffff", relief="flat", bd=0,
                             highlightthickness=0, font=FONT_TEXT, padx=0, pady=0, insertwidth=2)
         self.text.pack(fill="both")
         self.text.insert("1.0", note)
@@ -456,13 +610,13 @@ class NoteEditor:
         bottom.pack(fill="x", padx=pad, pady=(_px(w, 14), pad))
         tk.Label(bottom, text="Enter  save   ·   Shift+Enter  new line", bg=BG, fg=FG_FAINT,
                  font=FONT_SMALL).pack(side="left")
-        _Button(bottom, "Save", self.save, primary=True).pack(side="right")
-        _Button(bottom, "Cancel", self.close).pack(side="right", padx=(0, _px(w, 8)))
+        _Button(bottom, "Save", self.save, primary=True, width=80).pack(side="right")
+        _Button(bottom, "Cancel", self.close, width=80).pack(side="right", padx=(0, _px(w, 8)))
 
         self.text.bind("<Return>", lambda e: (self.save(), "break")[1])
         self.text.bind("<Shift-Return>", lambda e: (self.text.insert("insert", "\n"), "break")[1])
         self.text.bind("<KeyRelease>", lambda e: self._sync_placeholder())
-        self.text.bind("<FocusIn>", lambda e: self.field.set_outline(ACCENT))
+        self.text.bind("<FocusIn>", lambda e: self.field.set_outline(BORDER_FOCUS))
         self.text.bind("<FocusOut>", lambda e: self.field.set_outline(BORDER))
         w.bind("<Escape>", lambda e: self.close())
         # No title bar: drag the header to move the window.
@@ -478,9 +632,8 @@ class NoteEditor:
         px = min(max(x + near_w - width, left + 8), right - width - 8)
         py = y - height - 10 if y - height - 10 > top else y + near_h + 10
         self._pos = (px, min(py, bottom_edge - height - 8))
-        # Open: fade in and rise a little.
-        self.motion = Motion(w, self._apply_motion, alpha=0.0, rise=8.0)
-        w.attributes("-alpha", 0.0)
+        # Open: rise smoothly into position.
+        self.motion = Motion(w, self._apply_motion, rise=8.0)
         self._apply_motion(force=True)
         w.deiconify()
         w.lift()
@@ -494,7 +647,6 @@ class NoteEditor:
         self.text.mark_set("insert", "end-1c")
         # A window without a title bar gets activated a moment later: put the caret in the box then.
         w.after(60, lambda: self._closed or self.text.focus_force())
-        self.motion.to("alpha", 1, 0.2, "power2.out")
         self.motion.to("rise", 0, 0.35, "power3.out")
 
     def _apply_motion(self, force: bool = False) -> None:
@@ -502,7 +654,6 @@ class NoteEditor:
             return
         px, py = self._pos
         self.win.geometry(f"+{px}+{py + round(self.motion['rise'])}")
-        self.win.attributes("-alpha", max(0.0, min(1.0, self.motion["alpha"])))
 
     def _sync_placeholder(self) -> None:
         if self.text.get("1.0", "end-1c"):
@@ -923,21 +1074,23 @@ class KeySetupWindow:
         self.on_submit, self.on_close = on_submit, on_close
         self._detect = detect_provider
         w = self.win = tk.Toplevel(root)
-        w.title("Master Prompt - setup")
+        w.title("dotix — setup")
         w.configure(bg=BG)
         w.resizable(False, False)
         w.attributes("-topmost", True)
         w.protocol("WM_DELETE_WINDOW", self.close)
 
-        tk.Label(w, text="Welcome to Master Prompt", bg=BG, fg=FG, font=("Segoe UI Semibold", 13)
+        tk.Label(w, text="Welcome to dotix", bg=BG, fg=FG, font=(FONT_FAMILY, 13, "bold")
                  ).pack(anchor="w", padx=20, pady=(18, 4))
         tk.Label(w, text="Type a prompt in any box, click the dot, then Yes. It is rewritten in place.\n"
                          "Paste an API key. The app detects the service from the key.",
                  bg=BG, fg=FG_DIM, font=FONT, justify="left", wraplength=460).pack(anchor="w", padx=20)
 
         tk.Label(w, text="Enter API key", bg=BG, fg=FG, font=FONT).pack(anchor="w", padx=20, pady=(14, 0))
-        self.entry = tk.Entry(w, show="•", bg=BG_2, fg=FG, insertbackground=FG, relief="flat",
-                              font=FONT_TEXT, width=52)
+        self.entry = tk.Entry(w, show="•", bg=BG_2, fg=FG, insertbackground=ACCENT_PURPLE,
+                              selectbackground="#6d28d9", selectforeground="#ffffff", relief="flat",
+                              font=FONT_TEXT, width=52, highlightthickness=1, highlightbackground=BORDER,
+                              highlightcolor=BORDER_FOCUS)
         self.entry.pack(fill="x", padx=20, pady=(4, 0), ipady=5)
         self.entry.bind("<Return>", lambda e: self._submit())
 
@@ -946,9 +1099,9 @@ class KeySetupWindow:
         self.status.pack(fill="x", padx=20, pady=(12, 0))
         bottom = tk.Frame(w, bg=BG)
         bottom.pack(fill="x", padx=20, pady=16)
-        self.btn_save = _Button(bottom, "Test & save", self._submit, primary=True)
+        self.btn_save = _Button(bottom, "Test & save", self._submit, primary=True, width=120)
         self.btn_save.pack(side="right")
-        _Button(bottom, "Later", self.close).pack(side="right", padx=8)
+        _Button(bottom, "Later", self.close, width=80).pack(side="right", padx=8)
         w.bind("<Escape>", lambda e: self.close())
 
         w.update_idletasks()
@@ -998,7 +1151,7 @@ class Toast:
         w.withdraw()
         w.overrideredirect(True)
         w.attributes("-topmost", True)
-        color = {"info": ACCENT, "error": ERROR, "ok": "#3ecf8e"}.get(kind, ACCENT)
+        color = {"info": ACCENT_PURPLE, "error": ERROR, "ok": "#34d399"}.get(kind, ACCENT_PURPLE)
         frame = tk.Frame(w, bg=BG, highlightthickness=1, highlightbackground=color)
         frame.pack()
         tk.Label(frame, text=message, bg=BG, fg=FG, font=FONT, padx=14, pady=8,
@@ -1006,7 +1159,10 @@ class Toast:
         w.update_idletasks()
         if IS_WINDOWS:
             try:
-                winapi.make_no_activate(int(w.wm_frame(), 16))
+                hwnd = int(w.wm_frame(), 16)
+                winapi.make_no_activate(hwnd)
+                winapi.round_corners(hwnd, _rgb(color))
+                winapi.enable_acrylic(hwnd)
             except Exception:
                 pass
         _place_near_cursor(w, w.winfo_reqwidth(), w.winfo_reqheight())

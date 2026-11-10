@@ -11,16 +11,13 @@ log = logging.getLogger(__name__)
 
 
 def make_icon_image(size: int = 64):
-    from PIL import Image, ImageDraw
+    """Render the dot itself as the system tray icon."""
+    from . import glass
 
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle((2, 2, size - 2, size - 2), radius=size // 4, fill=(124, 108, 255, 255))
-    # a simple 4-point sparkle
-    c, r, t = size / 2, size * 0.34, size * 0.09
-    d.polygon([(c, c - r), (c + t, c - t), (c + r, c), (c + t, c + t),
-               (c, c + r), (c - t, c + t), (c - r, c), (c - t, c - t)], fill="white")
-    return img
+    pad = max(2, size // 8)
+    dot_size = size - 2 * pad
+    frame = glass.Frame(size, size, pad, pad, dot_size)
+    return glass.render(frame)
 
 
 class Tray:
@@ -43,13 +40,13 @@ class Tray:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", act("quit")),
         )
-        self.icon = pystray.Icon("master-prompt", make_icon_image(), "Master Prompt", menu)
+        self.icon = pystray.Icon("dotix", make_icon_image(), "dotix", menu)
 
     def start(self) -> None:
         if self.icon:
             self.icon.run_detached()
 
-    def notify(self, message: str, title: str = "Master Prompt") -> None:
+    def notify(self, message: str, title: str = "dotix") -> None:
         if self.icon:
             try:
                 self.icon.notify(message, title)
