@@ -1,7 +1,7 @@
 // Counts one download, then sends the browser to the installer served by Vercel.
 // The download never waits on the counter: if Redis is missing, slow or down, it still redirects.
 const FILE = '/MasterPrompt-Setup-2.0.0.exe';
-const KEY = 'pm_downloads';
+const KEY = 'dotix_downloads';
 
 const redisUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
 const redisToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;

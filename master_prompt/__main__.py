@@ -90,8 +90,8 @@ def main() -> int:
         if lock is None:
             logging.getLogger(__name__).info("Already running - exiting")
             import ctypes
-            ctypes.windll.user32.MessageBoxW(None, "Master Prompt is already running (see the tray icon).",
-                                             "Master Prompt", 0x40)
+            ctypes.windll.user32.MessageBoxW(None, "dotix is already running (see the tray icon).",
+                                             "dotix", 0x40)
             return 0
         App(load_settings()).run()
         return 0
@@ -99,7 +99,7 @@ def main() -> int:
         print(f"Config problem: {e}", file=sys.stderr or sys.stdout)
         if sys.platform == "win32":
             import ctypes
-            ctypes.windll.user32.MessageBoxW(None, str(e), "Master Prompt - config problem", 0x10)
+            ctypes.windll.user32.MessageBoxW(None, str(e), "dotix - config problem", 0x10)
         return 1
 
 

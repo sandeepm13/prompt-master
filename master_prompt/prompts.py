@@ -7,7 +7,7 @@ tweak the text here (or add your own style in config.toml under [styles.xxx]).
 from __future__ import annotations
 
 BASE_SYSTEM_PROMPT = """\
-You are Master Prompt, a prompt-rewriting engine. You receive a rough draft of a message \
+You are dotix, a prompt-rewriting engine. You receive a rough draft of a message \
 that a user is about to send to an AI assistant (ChatGPT, Claude, Gemini, Copilot, a coding agent, etc.). \
 The draft may be typed in a hurry or dictated by voice, so it can contain typos, filler words, \
 repeated phrases, missing punctuation and speech-to-text mistakes.
@@ -84,7 +84,7 @@ def all_styles(custom: dict[str, dict] | None = None) -> dict[str, dict]:
 
 
 MESSAGE_SYSTEM_PROMPT = """\
-You are Master Prompt. The user typed a rough draft of a message to another person in a chat app \
+You are dotix. The user typed a rough draft of a message to another person in a chat app \
 (WhatsApp, Telegram, Slack, Teams, Discord, etc.). Rewrite it into the message they meant to send.
 
 Rules:
@@ -98,7 +98,7 @@ casual stays casual, formal stays formal.
 """
 
 EMAIL_SYSTEM_PROMPT = """\
-You are Master Prompt. The user typed a rough draft in an email app. Rewrite it into a clear email body they can send.
+You are dotix. The user typed a rough draft in an email app. Rewrite it into a clear email body they can send.
 
 Rules:
 1. Output ONLY the email body. No subject line unless the draft has one, no preamble, no explanation.

@@ -78,7 +78,7 @@ class App:
         elif hotkey_problem:
             self._error(hotkey_problem)
         else:
-            self.toast.show(f"Master Prompt is running.\n{self._how_to()}", duration_ms=4000)
+            self.toast.show(f"dotix is running.\n{self._how_to()}", duration_ms=4000)
         self.root.after(40, self._pump)
         self.root.after(UNDO_CHECK_MS, self._undo_check_tick)
         try:

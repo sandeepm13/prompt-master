@@ -136,6 +136,12 @@ a:focus-visible {
 .job-title {
   display: block;
   margin-top: clamp(14px, 1.4vw, 22px);
+  font-size: clamp(28px, 2.2vw, 44px);
+  letter-spacing: -0.02em;
+}
+
+.brand-dot {
+  color: var(--accent);
 }
 
 .contact-links {
