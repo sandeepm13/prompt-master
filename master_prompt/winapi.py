@@ -2,10 +2,11 @@
 Thin wrapper around the Windows API using ctypes (no extra packages needed).
 
 Everything that "talks to Windows" lives here:
-  * keyboard: pressing keys for the user (Ctrl+C, Ctrl+A, Ctrl+V)
+  * keyboard: pressing keys for the user (Ctrl+A, Ctrl+C, Ctrl+V)
   * clipboard: reading / writing text on the clipboard
   * windows: which window is in front, bringing a window back to the front
   * process name of the window in front (to skip terminals etc.)
+  * the global shortcut (Ctrl+Alt+P) that works in every app
 
 IMPORTANT for 64-bit Python: every function that returns or takes a HANDLE
 must have argtypes/restype set, otherwise pointers get cut to 32 bits and the
@@ -30,19 +31,18 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 # --------------------------------------------------------------------------
 # Constants
 # --------------------------------------------------------------------------
-MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x1, 0x2, 0x4, 0x8, 0x4000
-WM_HOTKEY = 0x0312
-WM_QUIT = 0x0012
-
 VK_BACK, VK_TAB, VK_RETURN, VK_SHIFT, VK_CONTROL, VK_MENU = 0x08, 0x09, 0x0D, 0x10, 0x11, 0x12
 VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU = 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5
 VK_LWIN, VK_RWIN = 0x5B, 0x5C
 VK_SPACE, VK_ESCAPE = 0x20, 0x1B
-VK_INSERT = 0x2D
 VK_MASK_KEY = 0xE8  # "unassigned" key. Tapping it stops a released Win key from opening Start.
 
 KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
+
+MOD_NOREPEAT = 0x4000  # holding the shortcut down fires it once, not over and over
+WM_HOTKEY = 0x0312
+WM_QUIT = 0x0012
 
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
@@ -53,15 +53,6 @@ SW_RESTORE = 9
 # --------------------------------------------------------------------------
 # Function signatures
 # --------------------------------------------------------------------------
-user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
-user32.RegisterHotKey.restype = wintypes.BOOL
-user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
-user32.UnregisterHotKey.restype = wintypes.BOOL
-user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
-user32.GetMessageW.restype = wintypes.BOOL
-user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-user32.PostThreadMessageW.restype = wintypes.BOOL
-
 user32.keybd_event.argtypes = [wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_size_t]
 user32.keybd_event.restype = None
 user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
@@ -115,6 +106,15 @@ user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetWindowTextW.restype = ctypes.c_int
 user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
 user32.GetCursorPos.restype = wintypes.BOOL
+
+user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
+user32.RegisterHotKey.restype = wintypes.BOOL
+user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.UnregisterHotKey.restype = wintypes.BOOL
+user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+user32.GetMessageW.restype = wintypes.BOOL
+user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostThreadMessageW.restype = wintypes.BOOL
 
 kernel32.GetCurrentThreadId.argtypes = []
 kernel32.GetCurrentThreadId.restype = wintypes.DWORD
@@ -206,8 +206,35 @@ def ctrl(letter: str) -> None:
     send_combo(VK_CONTROL, ord(letter.upper()))
 
 
-def shift_insert() -> None:
-    send_combo(VK_SHIFT, VK_INSERT)
+# --------------------------------------------------------------------------
+# Global shortcut
+# --------------------------------------------------------------------------
+def register_hotkey(hotkey_id: int, modifiers: int, vk: int) -> bool:
+    """False when another app already owns this shortcut."""
+    return bool(user32.RegisterHotKey(None, hotkey_id, modifiers | MOD_NOREPEAT, vk))
+
+
+def unregister_hotkey(hotkey_id: int) -> None:
+    user32.UnregisterHotKey(None, hotkey_id)
+
+
+def current_thread_id() -> int:
+    return int(kernel32.GetCurrentThreadId())
+
+
+def message_loop(on_hotkey) -> None:
+    """Blocks the current thread and calls on_hotkey(id) on every WM_HOTKEY."""
+    msg = wintypes.MSG()
+    while True:
+        r = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+        if r == 0 or r == -1:  # WM_QUIT or error
+            return
+        if msg.message == WM_HOTKEY:
+            on_hotkey(int(msg.wParam))
+
+
+def post_quit(thread_id: int) -> None:
+    user32.PostThreadMessageW(thread_id, WM_QUIT, 0, 0)
 
 
 # --------------------------------------------------------------------------
@@ -332,6 +359,13 @@ def process_name(hwnd: int) -> str:
         kernel32.CloseHandle(h)
 
 
+def window_pid(hwnd: int) -> int:
+    """Process id of the program that owns this window."""
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return int(pid.value)
+
+
 def is_window(hwnd: int) -> bool:
     return bool(hwnd) and bool(user32.IsWindow(hwnd))
 
@@ -386,80 +420,6 @@ def focus_window(hwnd: int, timeout: float = 0.6) -> bool:
     return False
 
 
-class GUITHREADINFO(ctypes.Structure):
-    _fields_ = [
-        ("cbSize", wintypes.DWORD),
-        ("flags", wintypes.DWORD),
-        ("hwndActive", wintypes.HWND),
-        ("hwndFocus", wintypes.HWND),
-        ("hwndCapture", wintypes.HWND),
-        ("hwndMenuOwner", wintypes.HWND),
-        ("hwndMoveSize", wintypes.HWND),
-        ("hwndCaret", wintypes.HWND),
-        ("rcCaret", wintypes.RECT),
-    ]
-
-
-user32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.POINTER(GUITHREADINFO)]
-user32.GetGUIThreadInfo.restype = wintypes.BOOL
-user32.SetFocus.argtypes = [wintypes.HWND]
-user32.SetFocus.restype = wintypes.HWND
-
-
-def focused_child(top: int) -> int:
-    """The control that has the caret inside this window, or the window itself."""
-    if not top:
-        return 0
-    info = GUITHREADINFO()
-    info.cbSize = ctypes.sizeof(GUITHREADINFO)
-    thread = user32.GetWindowThreadProcessId(top, None)
-    if thread and user32.GetGUIThreadInfo(thread, ctypes.byref(info)):
-        child = int(info.hwndFocus or 0) or int(info.hwndCaret or 0)
-        if child:
-            return child
-    return int(top)
-
-
-def focus_control(top: int, child: int) -> bool:
-    """Bring the window forward and put the caret back in the same control."""
-    if not focus_window(top or child):
-        return False
-    target = child if child and is_window(child) else top
-    if not target:
-        return False
-    me = kernel32.GetCurrentThreadId()
-    their = user32.GetWindowThreadProcessId(target, None)
-    attached = bool(their and their != me and user32.AttachThreadInput(me, their, True))
-    try:
-        user32.SetFocus(target)
-    finally:
-        if attached:
-            user32.AttachThreadInput(me, their, False)
-    return True
-
-
-def window_class(hwnd: int) -> str:
-    if not hwnd:
-        return ""
-    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-    user32.GetClassNameW.restype = ctypes.c_int
-    buf = ctypes.create_unicode_buffer(256)
-    user32.GetClassNameW(hwnd, buf, 256)
-    return buf.value
-
-
-def replace_edit_text(hwnd: int, text: str) -> bool:
-    """Replace the text of a real edit control. Other windows are left alone."""
-    if not is_window(hwnd):
-        return False
-    kind = window_class(hwnd).casefold()
-    if kind not in {"edit", "richedit", "richedit20a", "richedit20w", "richedit50w", "scintilla"}:
-        return False
-    user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPCWSTR]
-    user32.SendMessageW.restype = ctypes.c_ssize_t
-    return bool(user32.SendMessageW(hwnd, 0x000C, 0, text))
-
-
 def cursor_pos() -> tuple[int, int]:
     pt = wintypes.POINT()
     user32.GetCursorPos(ctypes.byref(pt))
@@ -475,21 +435,6 @@ user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
 user32.MonitorFromPoint.restype = wintypes.HANDLE
 user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MONITORINFO)]
 user32.GetMonitorInfoW.restype = wintypes.BOOL
-
-
-user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
-user32.MonitorFromWindow.restype = wintypes.HANDLE
-
-
-def monitor_rect(hwnd: int) -> tuple[int, int, int, int]:
-    """(left, top, right, bottom) of the full monitor that contains this window."""
-    mon = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
-    info = MONITORINFO()
-    info.cbSize = ctypes.sizeof(MONITORINFO)
-    if mon and user32.GetMonitorInfoW(mon, ctypes.byref(info)):
-        r = info.rcMonitor
-        return r.left, r.top, r.right, r.bottom
-    return 0, 0, 1920, 1080
 
 
 def work_area_at(x: int, y: int) -> tuple[int, int, int, int]:
@@ -540,31 +485,109 @@ def pin_overlay(hwnd: int) -> None:
     )
 
 
+DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND = 33, 2
+DWMWA_BORDER_COLOR = 34
+
+
+def round_corners(hwnd: int, border: tuple[int, int, int] | None = None) -> bool:
+    """Windows 11 rounded corners (and border colour) for a window. False on older Windows."""
+    try:
+        dwm = ctypes.WinDLL("dwmapi")
+        dwm.DwmSetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+        dwm.DwmSetWindowAttribute.restype = ctypes.c_long
+    except (OSError, AttributeError):
+        return False
+    pref = ctypes.c_int(DWMWCP_ROUND)
+    if dwm.DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ctypes.byref(pref), 4) != 0:
+        return False
+    if border:
+        r, g, b = border
+        colour = wintypes.DWORD(r | (g << 8) | (b << 16))
+        dwm.DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, ctypes.byref(colour), 4)
+    return True
+
+
 # --------------------------------------------------------------------------
-# Global hotkeys
+# Per-pixel transparent windows (the glass dot)
 # --------------------------------------------------------------------------
-def register_hotkey(hotkey_id: int, modifiers: int, vk: int) -> bool:
-    return bool(user32.RegisterHotKey(None, hotkey_id, modifiers | MOD_NOREPEAT, vk))
+gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+WS_EX_LAYERED = 0x00080000
+ULW_ALPHA, AC_SRC_OVER, AC_SRC_ALPHA = 0x2, 0x0, 0x1
 
 
-def unregister_hotkey(hotkey_id: int) -> None:
-    user32.UnregisterHotKey(None, hotkey_id)
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG), ("biHeight", wintypes.LONG),
+                ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
+                ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
+                ("biClrImportant", wintypes.DWORD)]
 
 
-def current_thread_id() -> int:
-    return int(kernel32.GetCurrentThreadId())
+class BLENDFUNCTION(ctypes.Structure):
+    _fields_ = [("BlendOp", ctypes.c_ubyte), ("BlendFlags", ctypes.c_ubyte),
+                ("SourceConstantAlpha", ctypes.c_ubyte), ("AlphaFormat", ctypes.c_ubyte)]
 
 
-def message_loop(on_hotkey) -> None:
-    """Blocks the current thread and calls on_hotkey(id) on every WM_HOTKEY."""
-    msg = wintypes.MSG()
-    while True:
-        r = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
-        if r == 0 or r == -1:  # WM_QUIT or error
-            return
-        if msg.message == WM_HOTKEY:
-            on_hotkey(int(msg.wParam))
+user32.GetDC.argtypes = [wintypes.HWND]
+user32.GetDC.restype = wintypes.HDC
+user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+user32.ReleaseDC.restype = ctypes.c_int
+user32.UpdateLayeredWindow.argtypes = [
+    wintypes.HWND, wintypes.HDC, ctypes.POINTER(wintypes.POINT), ctypes.POINTER(wintypes.SIZE),
+    wintypes.HDC, ctypes.POINTER(wintypes.POINT), wintypes.COLORREF, ctypes.POINTER(BLENDFUNCTION), wintypes.DWORD,
+]
+user32.UpdateLayeredWindow.restype = wintypes.BOOL
+gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+gdi32.CreateCompatibleDC.restype = wintypes.HDC
+gdi32.DeleteDC.argtypes = [wintypes.HDC]
+gdi32.DeleteDC.restype = wintypes.BOOL
+gdi32.CreateDIBSection.argtypes = [wintypes.HDC, ctypes.POINTER(BITMAPINFOHEADER), wintypes.UINT,
+                                   ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.DWORD]
+gdi32.CreateDIBSection.restype = wintypes.HBITMAP
+gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+gdi32.SelectObject.restype = wintypes.HGDIOBJ
+gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+gdi32.DeleteObject.restype = wintypes.BOOL
 
 
-def post_quit(thread_id: int) -> None:
-    user32.PostThreadMessageW(thread_id, WM_QUIT, 0, 0)
+def is_layered(hwnd: int) -> bool:
+    return bool(_GetWindowLong(hwnd, GWL_EXSTYLE) & WS_EX_LAYERED)
+
+
+def make_layered(hwnd: int, on: bool = True) -> None:
+    """On: hide the window's own drawing, only what update_layered sends is shown. Off: undo that."""
+    style = _GetWindowLong(hwnd, GWL_EXSTYLE)
+    new = style | WS_EX_LAYERED if on else style & ~WS_EX_LAYERED
+    if new != style:
+        _SetWindowLong(hwnd, GWL_EXSTYLE, new)
+
+
+def update_layered(hwnd: int, width: int, height: int, bgra: bytes, alpha: int = 255) -> bool:
+    """
+    Show premultiplied BGRA pixels as the whole window, with per-pixel transparency.
+    alpha (0-255) fades the whole window. Clicks pass through fully clear pixels.
+    """
+    if len(bgra) != width * height * 4:
+        raise ValueError("bgra must be width * height * 4 bytes")
+    make_layered(hwnd)
+    screen = user32.GetDC(None)
+    mem = gdi32.CreateCompatibleDC(screen)
+    header = BITMAPINFOHEADER(biSize=ctypes.sizeof(BITMAPINFOHEADER), biWidth=width, biHeight=-height,
+                              biPlanes=1, biBitCount=32, biCompression=0)
+    bits = ctypes.c_void_p()
+    bitmap = gdi32.CreateDIBSection(screen, ctypes.byref(header), 0, ctypes.byref(bits), None, 0)
+    try:
+        if not bitmap or not bits:
+            return False
+        old = gdi32.SelectObject(mem, bitmap)
+        ctypes.memmove(bits, bgra, len(bgra))
+        blend = BLENDFUNCTION(AC_SRC_OVER, 0, max(0, min(255, int(alpha))), AC_SRC_ALPHA)
+        ok = user32.UpdateLayeredWindow(hwnd, screen, None, ctypes.byref(wintypes.SIZE(width, height)), mem,
+                                        ctypes.byref(wintypes.POINT(0, 0)), 0, ctypes.byref(blend), ULW_ALPHA)
+        gdi32.SelectObject(mem, old)
+        return bool(ok)
+    finally:
+        if bitmap:
+            gdi32.DeleteObject(bitmap)
+        gdi32.DeleteDC(mem)
+        user32.ReleaseDC(None, screen)

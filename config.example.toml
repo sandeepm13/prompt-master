@@ -4,22 +4,14 @@
 #  Lines starting with # are comments (ignored).
 # =====================================================================
 
-[hotkeys]
-# Same as clicking the dot and pressing Yes. Set to "" to turn it off.
-auto = "ctrl+alt+p"
-# Puts your previous text back after a rewrite, even when the dot is hidden.
-undo = "ctrl+alt+z"
-
 [behavior]
-preview = true              # true = show the popup first; false = replace text directly
-auto_select_all = true      # if you didn't select anything, use ALL text in the box
-restore_clipboard = true    # put back whatever you had copied before
 default_style = "enhance"   # enhance | coding | concise | detailed | (your own style)
 timeout_seconds = 30        # per provider
-paste_restore_delay_ms = 600
-save_history = true         # keeps before/after pairs in data/history.jsonl
-auto_prompt = true          # true = ask "Generate the prompt?" after a pause in an LLM or agent box
-auto_prompt_idle_seconds = 3
+paste_restore_delay_ms = 600  # wait after Ctrl+V before your clipboard is put back
+read_chat_messages = true   # use your recent messages: visible ones in AI chats; Claude Code, Codex or Copilot Chat sessions in an IDE
+
+[hotkeys]
+regenerate = "ctrl+alt+p"   # same as clicking the dot and Yes, in any app. "" turns it off. e.g. "ctrl+shift+space", "win+alt+p"
 
 # ---------------------------------------------------------------------
 #  AI providers - tried top to bottom. If one fails (limit reached,
@@ -64,12 +56,11 @@ temperature = 0.3
 # model = "llama3.2"
 
 [apps]
-# Apps where the main shortcut is disabled, because Ctrl+C there means
-# "stop the running command". Use the enhance_clipboard shortcut instead.
+# The dot does nothing in these apps, because Ctrl+C there means "stop the running command".
 blocked = ["WindowsTerminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "conhost.exe", "wsl.exe", "mintty.exe"]
 
 # ---------------------------------------------------------------------
-#  Your own styles (appear in the popup's dropdown). Example:
+#  Your own style. Pick it with default_style above. Example:
 # ---------------------------------------------------------------------
 # [styles.linkedin]
 # label = "LinkedIn"

@@ -29,7 +29,6 @@ def cmd_check() -> int:
 
     s = load_settings()
     print(f"Config file : {CONFIG_PATH}")
-    print(f"Auto prompt : {s.auto_prompt}")
     print("Providers (tried in this order):")
     for p in s.providers:
         state = "ready" if p.usable else f"NO KEY (set api_key or env var {p.api_key_env})"
@@ -37,14 +36,15 @@ def cmd_check() -> int:
     return 0 if s.usable_providers else 1
 
 
-def cmd_test(text: str, style: str) -> int:
+def cmd_test(text: str, style: str, kind: str = "general", context: str = "") -> int:
     from .config import load_settings
     from .llm import LLMError, enhance
 
     s = load_settings()
     print(f"Original:\n{text}\n")
     try:
-        r = enhance(text, s.providers, style=style, custom_styles=s.custom_styles, timeout=s.timeout_seconds)
+        r = enhance(text, s.providers, style=style, custom_styles=s.custom_styles, timeout=s.timeout_seconds,
+                    kind=kind, context=context)
     except LLMError as e:
         print(f"FAILED: {e}")
         return 1
@@ -55,8 +55,11 @@ def cmd_test(text: str, style: str) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(prog="master_prompt", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--test", metavar="TEXT", help="improve TEXT once and print it (no hotkeys)")
+    parser.add_argument("--test", metavar="TEXT", help="improve TEXT once and print it (no dot)")
     parser.add_argument("--style", default="enhance", help="style for --test (enhance, coding, concise, detailed)")
+    parser.add_argument("--kind", default="general", choices=["general", "ide", "ai_chat", "messaging", "email"],
+                        help="where the text is typed, for --test")
+    parser.add_argument("--context", default="", help="context lines sent with --test")
     parser.add_argument("--check", action="store_true", help="check config.toml and API keys")
     args = parser.parse_args()
 
@@ -72,10 +75,10 @@ def main() -> int:
         if args.check:
             return cmd_check()
         if args.test:
-            return cmd_test(args.test, args.style)
+            return cmd_test(args.test, args.style, args.kind, args.context)
 
         if sys.platform != "win32":
-            print("The hotkey app only runs on Windows. You can still use --test / --check here.")
+            print("The dot app only runs on Windows. You can still use --test / --check here.")
             return 2
 
         from . import winapi

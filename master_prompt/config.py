@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .hotkey import HotkeyError, parse_hotkey
+
 
 def bundle_dir() -> Path:
     """Folder with the files shipped with the app (config.example.toml)."""
@@ -72,17 +74,11 @@ class Provider:
 
 @dataclass
 class Settings:
-    hotkey_auto: str = "ctrl+alt+p"
-    hotkey_undo: str = "ctrl+alt+z"
-    preview: bool = True
-    auto_select_all: bool = True
-    restore_clipboard: bool = True
     default_style: str = "enhance"
     timeout_seconds: float = 30.0
     paste_restore_delay_ms: int = 600
-    save_history: bool = True
-    auto_prompt: bool = True
-    auto_prompt_idle_seconds: float = 3.0
+    read_chat_messages: bool = True   # AI chats: use the messages visible above the input box
+    regenerate_hotkey: str = "ctrl+alt+p"  # "" turns the shortcut off
     providers: list[Provider] = field(default_factory=list)
     blocked_apps: list[str] = field(default_factory=list)
     custom_styles: dict[str, dict] = field(default_factory=dict)
@@ -101,42 +97,6 @@ def ensure_config_file() -> Path:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(EXAMPLE_CONFIG_PATH, CONFIG_PATH)
     return CONFIG_PATH
-
-
-def set_provider_key(text: str, provider: str, key: str) -> str:
-    """
-    Return config.toml text with `api_key = "<key>"` set inside the [[providers]] block
-    whose name is `provider`. Edits the text (instead of re-writing the TOML) so the
-    user's comments survive.
-    """
-    key = key.strip()
-    if any(c in key for c in '"\\\r\n'):
-        raise ConfigError("That API key contains characters a key never has (quotes or line breaks).")
-    lines = text.splitlines(keepends=True)
-    blocks: list[list[int]] = []  # line numbers of each [[providers]] block
-    current: list[int] | None = None
-    for i, line in enumerate(lines):
-        s = line.strip()
-        if s.startswith("[[providers]]"):
-            current = []
-            blocks.append(current)
-        elif s.startswith("["):
-            current = None
-        elif current is not None:
-            current.append(i)
-    for block in blocks:
-        names = [i for i in block if re.match(r'\s*name\s*=\s*"' + re.escape(provider) + '"', lines[i])]
-        if not names:
-            continue
-        new_line = f'api_key = "{key}"\n'
-        for i in block:
-            if re.match(r"\s*api_key\s*=", lines[i]):
-                lines[i] = new_line
-                break
-        else:
-            lines.insert(names[0] + 1, new_line)
-        return "".join(lines)
-    raise ConfigError(f"config.toml has no [[providers]] entry named '{provider}'.")
 
 
 # Most specific prefix first. sk-or- and sk-ant- must be checked before sk-.
@@ -254,67 +214,21 @@ def save_provider(spec: dict[str, str], path: Path | None = None) -> None:
     ), encoding="utf-8")
 
 
-def save_provider_keys(keys: dict[str, str], path: Path | None = None) -> None:
-    """Write {provider name: key} into config.toml (empty keys are skipped)."""
-    path = path or ensure_config_file()
-    text = path.read_text(encoding="utf-8")
-    for name, key in keys.items():
-        if key.strip():
-            text = set_provider_key(text, name, key)
-    path.write_text(text, encoding="utf-8")
-
-
-def set_auto_prompt(text: str, enabled: bool) -> str:
-    """
-    Return config.toml text with `auto_prompt = true|false` set inside [behavior].
-    Edits the text (instead of re-writing the TOML) so the user's comments survive.
-    """
-    lines = text.splitlines(keepends=True)
-    start: int | None = None
-    end: int | None = None
-    for i, line in enumerate(lines):
-        s = line.strip()
-        if re.match(r"\[\s*behavior\s*\]\s*(?:#.*)?$", s):
-            start = i
-        elif start is not None and s.startswith("["):
-            end = i
-            break
-    if start is None:
-        raise ConfigError("config.toml has no [behavior] table.")
-    if end is None:
-        end = len(lines)
-    value = "true" if enabled else "false"
-    for i in range(start + 1, end):
-        if re.match(r"\s*auto_prompt\s*=", lines[i]):
-            comment = ""
-            match = re.search(r"(\s+#.*)$", lines[i].rstrip("\r\n"))
-            if match:
-                comment = match.group(1)
-            ending = "\n" if lines[i].endswith("\n") else ""
-            lines[i] = f"auto_prompt = {value}{comment}{ending}"
-            break
-    else:
-        lines.insert(end, f"auto_prompt = {value}\n")
-    return "".join(lines)
-
-
 def parse_settings(data: dict) -> Settings:
     s = Settings()
-    hk = data.get("hotkeys", {})
-    s.hotkey_auto = str(hk.get("auto", s.hotkey_auto))
-    s.hotkey_undo = str(hk.get("undo", s.hotkey_undo))
-
     b = data.get("behavior", {})
-    s.preview = bool(b.get("preview", s.preview))
-    s.auto_select_all = bool(b.get("auto_select_all", s.auto_select_all))
-    s.restore_clipboard = bool(b.get("restore_clipboard", s.restore_clipboard))
     s.default_style = str(b.get("default_style", s.default_style))
     s.timeout_seconds = float(b.get("timeout_seconds", s.timeout_seconds))
     s.paste_restore_delay_ms = int(b.get("paste_restore_delay_ms", s.paste_restore_delay_ms))
-    s.save_history = bool(b.get("save_history", s.save_history))
-    s.auto_prompt = bool(b.get("auto_prompt", s.auto_prompt))
-    idle = float(b.get("auto_prompt_idle_seconds", s.auto_prompt_idle_seconds))
-    s.auto_prompt_idle_seconds = idle if idle >= 1 else 1.0
+    s.read_chat_messages = bool(b.get("read_chat_messages", s.read_chat_messages))
+
+    h = data.get("hotkeys", {})
+    s.regenerate_hotkey = str(h.get("regenerate", s.regenerate_hotkey)).strip()
+    if s.regenerate_hotkey:
+        try:
+            parse_hotkey(s.regenerate_hotkey)
+        except HotkeyError as e:
+            raise ConfigError(f"[hotkeys] regenerate: {e}") from e
 
     providers = data.get("providers", [])
     if not isinstance(providers, list):

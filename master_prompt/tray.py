@@ -24,8 +24,7 @@ def make_icon_image(size: int = 64):
 
 
 class Tray:
-    def __init__(self, actions: dict[str, Callable[[], None]],
-                 is_auto_prompt_on: Callable[[], bool]):
+    def __init__(self, actions: dict[str, Callable[[], None]]):
         self.icon = None
         try:
             import pystray
@@ -37,13 +36,9 @@ class Tray:
             return lambda icon, item: actions[name]()
 
         menu = pystray.Menu(
-            pystray.MenuItem("Auto prompt", act("toggle_auto_prompt"),
-                             checked=lambda item: is_auto_prompt_on()),
-            pystray.Menu.SEPARATOR,
             pystray.MenuItem("API keys…", act("api_keys")),
             pystray.MenuItem("Open config", act("open_config")),
             pystray.MenuItem("Reload config", act("reload")),
-            pystray.MenuItem("Open history", act("open_history")),
             pystray.MenuItem("Open log", act("open_log")),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", act("quit")),

@@ -1,5 +1,5 @@
 """
-The little windows you see: the preview popup and the small "toast" messages.
+The little windows you see: the dot, the "Regenerate?" popup, the API key window and toasts.
 
 Built with tkinter, which comes with Python - nothing to install.
 All functions here must be called from the main (tkinter) thread.
@@ -9,26 +9,86 @@ from __future__ import annotations
 import json
 import sys
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
-from tkinter import ttk
 from typing import Callable
+
+from PIL import Image, ImageDraw, ImageTk
+
+from . import glass
+from .motion import Motion
 
 IS_WINDOWS = sys.platform == "win32"
 if IS_WINDOWS:
     from . import winapi
 
-# Colours (dark theme)
-BG = "#1e1f24"
-BG_2 = "#2a2c33"
-FG = "#e8e8ea"
-FG_DIM = "#9a9ca5"
+# Colours (dark glass theme, matching the dot)
+BG = "#1b1c22"         # window surface
+BG_2 = "#24252d"       # cards and text fields
+BG_3 = "#30323c"       # hover
+BORDER = "#34363f"
+FG = "#ececf1"
+FG_DIM = "#a0a2ad"
+FG_FAINT = "#6e707c"
 ACCENT = "#7c6cff"
-ACCENT_HOVER = "#6a59f5"
+ACCENT_HOVER = "#8f81ff"
 ERROR = "#ff6b6b"
 FONT = ("Segoe UI", 10)
 FONT_TEXT = ("Segoe UI", 11)
 FONT_SMALL = ("Segoe UI", 9)
+FONT_TINY = ("Segoe UI Semibold", 8)
 FONT_TITLE = ("Segoe UI Semibold", 11)
+FONT_BUTTON = ("Segoe UI Semibold", 10)
+
+
+def _px(widget: tk.Misc, n: float) -> int:
+    """n pixels at 100% display scaling, in real pixels."""
+    return round(n * max(1.0, widget.winfo_fpixels("1i") / 96))
+
+
+def _rgb(colour: str) -> tuple[int, int, int]:
+    colour = colour.lstrip("#")
+    return int(colour[0:2], 16), int(colour[2:4], 16), int(colour[4:6], 16)
+
+
+def _mix(a: str, b: str, t: float) -> str:
+    t = max(0.0, min(1.0, t))
+    return "#%02x%02x%02x" % tuple(round(x + (y - x) * t) for x, y in zip(_rgb(a), _rgb(b)))
+
+
+def _rounded(width: int, height: int, radius: float, fill: str, bg: str, outline: str | None = None,
+             outline_width: float = 1) -> ImageTk.PhotoImage:
+    """A smooth rounded rectangle on a solid background, for canvas-drawn panels and buttons."""
+    ss = 3
+    img = Image.new("RGB", (width * ss, height * ss), _rgb(bg))
+    ImageDraw.Draw(img).rounded_rectangle(
+        (0, 0, width * ss - 1, height * ss - 1), radius=radius * ss, fill=_rgb(fill),
+        outline=_rgb(outline) if outline else None, width=round(outline_width * ss) if outline else 0)
+    return ImageTk.PhotoImage(img.resize((width, height), Image.LANCZOS))
+
+
+def _frameless(win: tk.Toplevel) -> None:
+    """No title bar. Rounded corners and a thin border on Windows 11; a square border elsewhere."""
+    win.overrideredirect(True)
+    win.configure(bg=BG)
+    rounded = False
+    if IS_WINDOWS:
+        win.update_idletasks()
+        try:
+            rounded = winapi.round_corners(int(win.wm_frame(), 16), _rgb(BORDER))
+        except Exception:
+            rounded = False
+    if not rounded:
+        win.configure(highlightthickness=1, highlightbackground=BORDER, highlightcolor=BORDER)
+
+
+def _dot_icon(size: int) -> ImageTk.PhotoImage:
+    """The glass dot, small, for window headers."""
+    pad = max(2, size // 6)
+    img = glass.render(glass.Frame(size + 2 * pad, size + 2 * pad, pad, pad - 1, size))
+    base = Image.new("RGBA", img.size, _rgb(BG) + (255,))
+    base.alpha_composite(img)
+    return ImageTk.PhotoImage(base.convert("RGB"))
 
 
 def _cursor_and_area(root: tk.Misc) -> tuple[int, int, tuple[int, int, int, int]]:
@@ -54,276 +114,245 @@ def _place_near_cursor(win: tk.Toplevel, width: int, height: int, offset: int = 
     win.geometry(f"{width}x{height}+{px}+{py}")
 
 
-class _Button(tk.Label):
-    """Flat button that looks the same on every Windows theme."""
+class _Button(tk.Canvas):
+    """
+    Rounded button, drawn smooth, with an animated hover and press.
+    kind: "primary" (accent), "secondary" (outlined) or "ghost" (no fill until hovered, e.g. the ✕).
+    """
 
-    def __init__(self, master, text: str, command: Callable[[], None], primary: bool = False):
-        self._bg = ACCENT if primary else BG_2
-        self._hover = ACCENT_HOVER if primary else "#353843"
-        super().__init__(master, text=text, bg=self._bg, fg="white" if primary else FG,
-                         font=FONT, padx=14, pady=6, cursor="hand2")
+    _STYLES = {
+        # base fill, hover fill, text, outline
+        "primary": (ACCENT, ACCENT_HOVER, "#ffffff", None),
+        "secondary": (BG_2, BG_3, FG, BORDER),
+        "ghost": (None, BG_3, FG_DIM, None),
+    }
+
+    def __init__(self, master, text: str, command: Callable[[], None], primary: bool = False, *,
+                 kind: str | None = None, square: int | None = None, font=FONT_BUTTON):
+        self._kind = kind or ("primary" if primary else "secondary")
+        self._bg = master.cget("bg")
+        self._font = font
+        if square:
+            width = height = _px(master, square)
+        else:
+            width = tkfont.Font(master, font=font).measure(text) + _px(master, 32)
+            height = _px(master, 32)
+        super().__init__(master, width=width, height=height, bg=self._bg, highlightthickness=0, bd=0,
+                         cursor="hand2")
+        self._size = (width, height)
+        self._radius = height / 2 if square else _px(master, 9)
         self._command = command
         self._enabled = True
-        self.bind("<Button-1>", lambda e: self._enabled and self._command())
-        self.bind("<Enter>", lambda e: self._enabled and self.configure(bg=self._hover))
-        self.bind("<Leave>", lambda e: self.configure(bg=self._bg))
+        self._inside = False
+        self._photo = None
+        self._image = self.create_image(0, 0, anchor="nw")
+        self._label = self.create_text(width / 2, height / 2, text=text, font=font)
+        self.motion = Motion(self, self._paint, hover=0.0, press=0.0)
+        self.bind("<Enter>", self._enter)
+        self.bind("<Leave>", self._leave)
+        self.bind("<ButtonPress-1>", self._down)
+        self.bind("<ButtonRelease-1>", self._up)
+        self._paint()
+
+    def _paint(self) -> None:
+        base, hover, text, outline = self._STYLES[self._kind]
+        h, p = self.motion["hover"], self.motion["press"]
+        fill = _mix(base or self._bg, hover, h)
+        fill = _mix(fill, "#000000", 0.18 * p)
+        if not self._enabled:
+            fill = base or self._bg
+        if self._kind == "ghost":
+            text = _mix(text, FG, h)
+        self._photo = _rounded(*self._size, self._radius, fill, self._bg,
+                               _mix(outline, "#4a4c58", h) if outline else None)
+        self.itemconfigure(self._image, image=self._photo)
+        self.itemconfigure(self._label, fill=text if self._enabled else FG_FAINT)
+
+    def _enter(self, _e) -> None:
+        self._inside = True
+        if self._enabled:
+            self.motion.to("hover", 1, 0.18, "power2.out")
+
+    def _leave(self, _e) -> None:
+        self._inside = False
+        self.motion.to("hover", 0, 0.25, "power2.out")
+        self.motion.to("press", 0, 0.15, "power2.out")
+
+    def _down(self, _e) -> None:
+        if self._enabled:
+            self.motion.to("press", 1, 0.08, "power2.out")
+
+    def _up(self, _e) -> None:
+        self.motion.to("press", 0, 0.3, "power2.out")
+        if self._enabled and self._inside:
+            self._command()
 
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = enabled
-        self.configure(fg=(("white" if self._bg == ACCENT else FG) if enabled else FG_DIM))
+        self.configure(cursor="hand2" if enabled else "arrow")
+        if not enabled:
+            self.motion.set("hover", 0)
+        self._paint()
 
 
-class PreviewPopup:
-    """
-    Shows the improved prompt so you can check / edit it.
-      Enter        -> use it (paste into your app)
-      Shift+Enter  -> new line
-      Ctrl+R       -> try again
-      Esc          -> cancel
-    """
+class _Card(tk.Canvas):
+    """A rounded panel of a fixed width. Put widgets in .body; the panel grows to fit their height."""
 
-    WIDTH, HEIGHT = 620, 400
-
-    def __init__(self, root: tk.Tk, styles: dict[str, dict], *,
-                 on_accept: Callable[[str], None], on_cancel: Callable[[], None],
-                 on_regenerate: Callable[[str], None], on_copy: Callable[[str], None]):
-        self.root = root
-        self.styles = styles
-        self.on_accept, self.on_cancel = on_accept, on_cancel
-        self.on_regenerate, self.on_copy = on_regenerate, on_copy
-        self.loading = False
-        self._dots = 0
-        self._build()
-
-    # ----- building the window -------------------------------------------
-    def _build(self) -> None:
-        w = self.win = tk.Toplevel(self.root)
-        w.withdraw()
-        w.title("Master Prompt")
-        w.configure(bg=BG)
-        w.attributes("-topmost", True)
-        if IS_WINDOWS:
-            w.attributes("-toolwindow", True)
-        w.protocol("WM_DELETE_WINDOW", self._cancel)
-
-        top = tk.Frame(w, bg=BG)
-        top.pack(fill="x", padx=14, pady=(12, 6))
-        tk.Label(top, text="✨ Master Prompt", bg=BG, fg=FG, font=FONT_TITLE).pack(side="left")
-
-        style_names = [v.get("label", k) for k, v in self.styles.items()]
-        self._label_to_key = {v.get("label", k): k for k, v in self.styles.items()}
-        self.style_var = tk.StringVar(value=style_names[0])
-        s = ttk.Style(w)
-        try:
-            s.theme_use("clam")
-        except tk.TclError:
-            pass
-        s.configure("MP.TCombobox", fieldbackground=BG_2, background=BG_2, foreground=FG,
-                    arrowcolor=FG, bordercolor=BG_2, lightcolor=BG_2, darkcolor=BG_2)
-        s.map("MP.TCombobox", fieldbackground=[("readonly", BG_2)], foreground=[("readonly", FG)])
-        self.style_box = ttk.Combobox(top, textvariable=self.style_var, values=style_names,
-                                      state="readonly", width=11, style="MP.TCombobox", font=FONT)
-        self.style_box.pack(side="left", padx=(12, 0))
-        self.style_box.bind("<<ComboboxSelected>>", lambda e: self._regenerate())
-
-        self.status = tk.Label(top, text="", bg=BG, fg=FG_DIM, font=FONT_SMALL)
-        self.status.pack(side="right")
-
-        body = tk.Frame(w, bg=BG_2)
-        body.pack(fill="both", expand=True, padx=14)
-        self.text = tk.Text(body, wrap="word", bg=BG_2, fg=FG, insertbackground=FG,
-                            selectbackground=ACCENT, relief="flat", font=FONT_TEXT,
-                            padx=10, pady=8, undo=True, height=10)
-        scroll = tk.Scrollbar(body, command=self.text.yview)
-        self.text.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        self.text.pack(side="left", fill="both", expand=True)
-        self.text.tag_configure("dim", foreground=FG_DIM)
-        self.text.tag_configure("error", foreground=ERROR)
-
-        bottom = tk.Frame(w, bg=BG)
-        bottom.pack(fill="x", padx=14, pady=10)
-        self.btn_use = _Button(bottom, "Use prompt", self._accept, primary=True)
-        self.btn_use.pack(side="right")
-        self.btn_copy = _Button(bottom, "Copy", self._copy)
-        self.btn_copy.pack(side="right", padx=6)
-        self.btn_retry = _Button(bottom, "Retry", self._regenerate)
-        self.btn_retry.pack(side="right")
-        self.btn_orig = _Button(bottom, "Original", self._toggle_original)
-        self.btn_orig.pack(side="right", padx=6)
-        # packed last so the buttons always keep their space on narrow screens
-        tk.Label(bottom, text="Enter = use · Shift+Enter = new line · Esc = cancel",
-                 bg=BG, fg=FG_DIM, font=FONT_SMALL, anchor="w").pack(side="left", fill="x", expand=True)
-
-        w.bind("<Escape>", lambda e: self._cancel())
-        w.bind("<Control-r>", lambda e: (self._regenerate(), "break")[1])
-        w.bind("<Control-R>", lambda e: (self._regenerate(), "break")[1])
-        self.text.bind("<Return>", lambda e: (self._accept(), "break")[1])
-        self.text.bind("<Control-Return>", lambda e: (self._accept(), "break")[1])
-        self.text.bind("<Shift-Return>", lambda e: (self.text.insert("insert", "\n"), "break")[1])
-
-        self._original = ""
-        self._result = ""
-        self._showing_original = False
-
-    # ----- public API ------------------------------------------------------
-    def show_loading(self, original: str, style_key: str, reposition: bool = True) -> None:
-        self._original = original
-        self._showing_original = False
-        self.btn_orig.configure(text="Original")
-        label = self.styles.get(style_key, {}).get("label", style_key)
-        self.style_var.set(label)
-        self._set_text(original, "dim")
-        self.text.configure(state="disabled")
-        self._set_buttons(False)
-        self.loading = True
-        self._animate()
-        if reposition or not self.win.winfo_viewable():
-            scale = max(1.0, self.root.winfo_fpixels("1i") / 96)  # bigger on 125%/150% screens
-            _place_near_cursor(self.win, int(self.WIDTH * scale), int(self.HEIGHT * scale))
-        self._present()
-
-    def show_result(self, text: str, info: str) -> None:
-        self.loading = False
-        self._result = text
-        self.text.configure(state="normal")
-        self._set_text(text)
-        self.text.edit_reset()
-        self.text.mark_set("insert", "end-1c")
-        self.status.configure(text=info, fg=FG_DIM)
-        self._set_buttons(True)
-        self._present()
-
-    def show_error(self, message: str) -> None:
-        self.loading = False
-        self.text.configure(state="normal")
-        self._set_text(message + "\n\nPress Ctrl+R to retry or Esc to close.", "error")
-        self.text.configure(state="disabled")
-        self.status.configure(text="Failed", fg=ERROR)
-        self._set_buttons(False)
-        self.btn_retry.set_enabled(True)
-        self._present()
-
-    def hide(self) -> None:
-        self.loading = False
-        self.win.withdraw()
+    def __init__(self, master, width: int, *, fill: str = BG_2, outline: str | None = BORDER,
+                 radius: int = 10, pad: tuple[int, int] = (12, 10)):
+        self._bg = master.cget("bg")
+        super().__init__(master, width=width, height=1, bg=self._bg, highlightthickness=0, bd=0)
+        self._fill, self._outline = fill, outline
+        self._radius = _px(master, radius)
+        self._pad = (_px(master, pad[0]), _px(master, pad[1]))
+        self._width = width
+        self._photo = None
+        self._image = self.create_image(0, 0, anchor="nw")
+        self.body = tk.Frame(self, bg=fill)
+        self.create_window(self._pad[0], self._pad[1], window=self.body, anchor="nw",
+                           width=width - 2 * self._pad[0])
+        self._height = 0
 
     @property
-    def visible(self) -> bool:
-        return bool(self.win.winfo_viewable())
+    def inner_width(self) -> int:
+        return self._width - 2 * self._pad[0]
 
-    @property
-    def current_style(self) -> str:
-        return self._label_to_key.get(self.style_var.get(), "enhance")
+    def fit(self) -> None:
+        """Grow or shrink to the content. Call after changing what is inside."""
+        self.body.update_idletasks()
+        height = self.body.winfo_reqheight() + 2 * self._pad[1]
+        if height != self._height:
+            self._height = height
+            self.configure(height=height)
+            self._draw()
 
-    # ----- internals -------------------------------------------------------
-    def _present(self) -> None:
-        self.win.deiconify()
-        self.win.lift()
-        self.win.attributes("-topmost", True)
-        self.win.update_idletasks()
-        if IS_WINDOWS:
-            try:
-                winapi.focus_window(int(self.win.wm_frame(), 16), timeout=0.3)
-            except Exception:
-                pass
-        self.win.focus_force()
-        self.text.focus_set()
+    def _draw(self) -> None:
+        if self._height:
+            self._photo = _rounded(self._width, self._height, self._radius, self._fill, self._bg, self._outline)
+            self.itemconfigure(self._image, image=self._photo)
 
-    def _set_text(self, text: str, tag: str | None = None) -> None:
-        prev = self.text.cget("state")
-        self.text.configure(state="normal")
-        self.text.delete("1.0", "end")
-        self.text.insert("1.0", text, (tag,) if tag else ())
-        self.text.configure(state=prev)
+    def set_outline(self, colour: str | None) -> None:
+        self._outline = colour
+        self._draw()
 
-    def _set_buttons(self, enabled: bool) -> None:
-        for b in (self.btn_use, self.btn_copy, self.btn_retry, self.btn_orig):
-            b.set_enabled(enabled)
 
-    def _animate(self) -> None:
-        if not self.loading:
-            return
-        self._dots = (self._dots + 1) % 4
-        self.status.configure(text="Enhancing" + "." * self._dots + " " * (3 - self._dots), fg=ACCENT)
-        self.win.after(350, self._animate)
+def _header(win: tk.Misc, title: str, on_close: Callable[[], None], icon: ImageTk.PhotoImage | None = None,
+            ) -> tk.Frame:
+    row = tk.Frame(win, bg=BG)
+    if icon is not None:
+        tk.Label(row, image=icon, bg=BG, bd=0).pack(side="left", padx=(0, _px(win, 8)))
+    tk.Label(row, text=title, bg=BG, fg=FG, font=FONT_TITLE).pack(side="left")
+    _Button(row, "✕", on_close, kind="ghost", square=26, font=FONT_SMALL).pack(side="right")
+    return row
 
-    def _current_text(self) -> str:
-        return self.text.get("1.0", "end-1c").strip()
 
-    def _accept(self) -> None:
-        if self.loading or self._showing_original:
-            if self._showing_original:
-                self._toggle_original()
-            return
-        text = self._current_text()
-        if text:
-            self.on_accept(text)
-
-    def _copy(self) -> None:
-        if not self.loading and not self._showing_original:
-            self.on_copy(self._current_text())
-
-    def _cancel(self) -> None:
-        self.on_cancel()
-
-    def _regenerate(self) -> None:
-        if not self.loading:
-            self.on_regenerate(self.current_style)
-
-    def _toggle_original(self) -> None:
-        if self.loading:
-            return
-        if not self._showing_original:
-            self._result = self._current_text()  # keep your edits
-            self.text.configure(state="normal")
-            self._set_text(self._original, "dim")
-            self.text.configure(state="disabled")
-            self.btn_orig.configure(text="Improved")
-            self._showing_original = True
-        else:
-            self.text.configure(state="normal")
-            self._set_text(self._result)
-            self.btn_orig.configure(text="Original")
-            self._showing_original = False
+def short(text: str, limit: int = 60) -> str:
+    """One line, cut at a word, for showing a note in the popup."""
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0] + "…"
 
 
 class ConfirmPopup:
     """
-    Asks "Generate the prompt?" near the cursor.
-    Yes calls on_yes. No and Escape call on_no.
-    This window never reads the clipboard, the focused control, or any file.
+    Asks "Regenerate the prompt?" beside the dot, and shows the context that will be used:
+    what was detected, and the user's note for this place ("My context").
+    It never takes keyboard focus, so the caret stays in the user's input box.
     """
 
-    def __init__(self, root: tk.Tk, *, on_yes: Callable[[], None], on_no: Callable[[], None]):
+    def __init__(self, root: tk.Tk, *, on_yes: Callable[[], None], on_no: Callable[[], None],
+                 on_edit_note: Callable[[], None], on_clear_note: Callable[[], None]):
         self.on_yes = on_yes
         self.on_no = on_no
+        self._anchor: tuple[int, int, int, int] | None = None
+        self._pos = (0, 0)
         w = self.win = tk.Toplevel(root)
+        self.motion = Motion(w, self._apply_motion, alpha=1.0, slide=0.0)
         w.withdraw()
         w.title("Master Prompt")
-        w.configure(bg=BG)
-        w.resizable(False, False)
         w.attributes("-topmost", True)
-        if IS_WINDOWS:
-            w.attributes("-toolwindow", True)
-        w.protocol("WM_DELETE_WINDOW", self._no)
+        _frameless(w)
+        pad = _px(w, 16)
+        width = _px(w, 320)
 
-        tk.Label(w, text="Generate the prompt?", bg=BG, fg=FG, font=FONT_TITLE).pack(
-            anchor="w", padx=16, pady=(14, 10))
+        self._icon = _dot_icon(_px(w, 16))
+        _header(w, "Regenerate this prompt?", self._no, self._icon).pack(fill="x", padx=(pad, _px(w, 10)),
+                                                                          pady=(_px(w, 12), 0))
+
+        card = self.card = _Card(w, width - 2 * pad)
+        card.pack(padx=pad, pady=(_px(w, 10), 0))
+        body, wrap = card.body, card.inner_width
+        self.context_box = tk.Frame(body, bg=BG_2)
+        tk.Label(self.context_box, text="WRITING IN", bg=BG_2, fg=FG_FAINT, font=FONT_TINY, anchor="w").pack(
+            fill="x")
+        self.place = tk.Label(self.context_box, text="", bg=BG_2, fg=FG, font=FONT_BUTTON, anchor="w",
+                              justify="left", wraplength=wrap)
+        self.place.pack(fill="x", pady=(_px(w, 2), 0))
+        self.detail = tk.Label(self.context_box, text="", bg=BG_2, fg=FG_DIM, font=FONT_SMALL, anchor="w",
+                               justify="left", wraplength=wrap)
+        self.divider = tk.Frame(self.context_box, bg=BORDER, height=1)
+
+        row = tk.Frame(body, bg=BG_2)
+        row.pack(fill="x", side="bottom")
+        self.note = tk.Label(row, text="", bg=BG_2, fg=ACCENT, font=FONT_SMALL, anchor="w", justify="left",
+                             wraplength=wrap - _px(w, 28), cursor="hand2")
+        self.note.pack(side="left", fill="x", expand=True)
+        self.note.bind("<Button-1>", lambda e: on_edit_note())
+        self.note.bind("<Enter>", lambda e: self._note_hover(True))
+        self.note.bind("<Leave>", lambda e: self._note_hover(False))
+        self.clear = _Button(row, "✕", on_clear_note, kind="ghost", square=22, font=FONT_TINY)
+        self._has_note = False
+
         bottom = tk.Frame(w, bg=BG)
-        bottom.pack(fill="x", padx=16, pady=(0, 14))
+        bottom.pack(fill="x", padx=pad, pady=(_px(w, 14), pad))
         _Button(bottom, "Yes", self._yes, primary=True).pack(side="right")
-        _Button(bottom, "No", self._no).pack(side="right", padx=(0, 8))
-        w.bind("<Escape>", lambda e: self._no())
+        _Button(bottom, "No", self._no).pack(side="right", padx=(0, _px(w, 8)))
+        if IS_WINDOWS:
+            w.update_idletasks()
+            try:
+                winapi.make_no_activate(int(w.wm_frame(), 16))
+            except Exception:
+                pass
 
-    def show(self) -> None:
-        self.win.update_idletasks()
-        width, height = self._size()
-        _place_near_cursor(self.win, width, height)
-        self._present()
+    def _note_hover(self, inside: bool) -> None:
+        base = FG if self._has_note else ACCENT
+        self.note.configure(fg=(ACCENT_HOVER if not self._has_note else "#ffffff") if inside else base)
+
+    def set_context(self, detected: str, note: str, place: str) -> None:
+        """Show what will be used. Called again after the note changes."""
+        # "prompt-master · Claude Code “Chat title”": the first part is the place, the rest the details.
+        head, _, rest = (detected or "").partition(" · ")
+        if head:
+            self.place.configure(text=head)
+            self.detail.configure(text=rest)
+            if rest:
+                self.detail.pack(fill="x", pady=(_px(self.win, 1), 0))
+            else:
+                self.detail.pack_forget()
+            self.divider.pack(fill="x", pady=(_px(self.win, 10), _px(self.win, 8)))
+            self.context_box.pack(fill="x", side="top")
+        else:
+            self.context_box.pack_forget()
+        self._has_note = bool(note)
+        if note:
+            self.note.configure(text=f"✎  {short(note)}", fg=FG)
+            self.clear.pack(side="right")
+        else:
+            self.note.configure(text=f"+  Add context for {place}", fg=ACCENT)
+            self.clear.pack_forget()
+        self.card.fit()
+        if self._anchor and self.win.winfo_viewable():
+            self.show_beside(*self._anchor)
+
+    def bounds(self) -> tuple[int, int, int, int]:
+        return self.win.winfo_x(), self.win.winfo_y(), self.win.winfo_width(), self.win.winfo_height()
 
     def show_beside(self, x: int, y: int, anchor_w: int, anchor_h: int) -> None:
-        """Open beside the floating dot. This window does not read any text."""
+        """Open beside the floating dot."""
+        self._anchor = (x, y, anchor_w, anchor_h)
+        self.card.fit()
+        self.win.geometry("")  # fit the content again
         self.win.update_idletasks()
         width, height = self._size()
         left, top, right, bottom = _work_area(self.win, x, y)
@@ -333,8 +362,28 @@ class ConfirmPopup:
         py = y + (anchor_h - height) // 2
         px = min(max(px, left + 8), max(left + 8, right - width - 8))
         py = min(max(py, top + 8), max(top + 8, bottom - height - 8))
-        self.win.geometry(f"{width}x{height}+{px}+{py}")
+        self._pos = (px, py)
+        if self.win.winfo_viewable():
+            self.win.geometry(f"{width}x{height}+{px + round(self.motion['slide'])}+{py}")
+            self._present()
+            return
+        # Opening: fade in and glide out of the dot.
+        towards_dot = 10 if px < x else -10
+        m = self.motion
+        m.set("alpha", 0)
+        m.set("slide", towards_dot)
+        self.win.attributes("-alpha", 0.0)
+        self.win.geometry(f"{width}x{height}+{px + towards_dot}+{py}")
         self._present()
+        m.to("alpha", 1, 0.22, "power2.out")
+        m.to("slide", 0, 0.38, "power3.out")
+
+    def _apply_motion(self) -> None:
+        if not self.win.winfo_viewable():
+            return
+        px, py = self._pos
+        self.win.geometry(f"+{px + round(self.motion['slide'])}+{py}")
+        self.win.attributes("-alpha", max(0.0, min(1.0, self.motion["alpha"])))
 
     def _size(self) -> tuple[int, int]:
         scale = max(1.0, self.win.winfo_fpixels("1i") / 96)
@@ -354,6 +403,8 @@ class ConfirmPopup:
                 pass
 
     def hide(self) -> None:
+        self._anchor = None
+        self.motion.kill()
         self.win.withdraw()
 
     def _yes(self) -> None:
@@ -361,6 +412,131 @@ class ConfirmPopup:
 
     def _no(self) -> None:
         self.on_no()
+
+
+class NoteEditor:
+    """
+    A small window for writing "My context" for one place (a project, a website, an app).
+    Unlike the popup, it takes keyboard focus so the user can type.
+    Enter saves, Shift+Enter adds a line, Esc cancels.
+    """
+
+    def __init__(self, root: tk.Tk, place: str, note: str, near: tuple[int, int, int, int], *,
+                 on_save: Callable[[str], None], on_close: Callable[[], None]):
+        self.on_save, self.on_close = on_save, on_close
+        self._closed = False
+        w = self.win = tk.Toplevel(root)
+        w.withdraw()
+        w.title("My context")
+        w.attributes("-topmost", True)
+        _frameless(w)
+        pad = _px(w, 18)
+        width = _px(w, 380)
+
+        header = _header(w, "My context", self.close)
+        header.pack(fill="x", padx=(pad, _px(w, 10)), pady=(_px(w, 12), 0))
+        tk.Label(w, text=f"Added to every prompt you write in {place}.", bg=BG, fg=FG_DIM, font=FONT_SMALL,
+                 anchor="w", justify="left", wraplength=width - 2 * pad).pack(fill="x", padx=pad)
+
+        self.field = _Card(w, width - 2 * pad, radius=10, pad=(12, 10))
+        self.field.pack(padx=pad, pady=(_px(w, 12), 0))
+        self.text = tk.Text(self.field.body, width=1, height=4, wrap="word", bg=BG_2, fg=FG, insertbackground=FG,
+                            selectbackground=ACCENT, selectforeground="#ffffff", relief="flat", bd=0,
+                            highlightthickness=0, font=FONT_TEXT, padx=0, pady=0, insertwidth=2)
+        self.text.pack(fill="both")
+        self.text.insert("1.0", note)
+        self.placeholder = tk.Label(self.field.body, text="e.g. Fixing the login bug. Explain in simple English.",
+                                    bg=BG_2, fg=FG_FAINT, font=FONT_TEXT, anchor="w", justify="left",
+                                    wraplength=self.field.inner_width - _px(w, 8))
+        self.placeholder.bind("<Button-1>", lambda e: self.text.focus_set())
+        self._sync_placeholder()
+        self.field.fit()
+
+        bottom = tk.Frame(w, bg=BG)
+        bottom.pack(fill="x", padx=pad, pady=(_px(w, 14), pad))
+        tk.Label(bottom, text="Enter  save   ·   Shift+Enter  new line", bg=BG, fg=FG_FAINT,
+                 font=FONT_SMALL).pack(side="left")
+        _Button(bottom, "Save", self.save, primary=True).pack(side="right")
+        _Button(bottom, "Cancel", self.close).pack(side="right", padx=(0, _px(w, 8)))
+
+        self.text.bind("<Return>", lambda e: (self.save(), "break")[1])
+        self.text.bind("<Shift-Return>", lambda e: (self.text.insert("insert", "\n"), "break")[1])
+        self.text.bind("<KeyRelease>", lambda e: self._sync_placeholder())
+        self.text.bind("<FocusIn>", lambda e: self.field.set_outline(ACCENT))
+        self.text.bind("<FocusOut>", lambda e: self.field.set_outline(BORDER))
+        w.bind("<Escape>", lambda e: self.close())
+        # No title bar: drag the header to move the window.
+        for part in (header, *header.winfo_children()):
+            if not isinstance(part, _Button):
+                part.bind("<ButtonPress-1>", self._drag_start)
+                part.bind("<B1-Motion>", self._drag)
+
+        w.update_idletasks()
+        width, height = w.winfo_reqwidth(), w.winfo_reqheight()
+        x, y, near_w, near_h = near
+        left, top, right, bottom_edge = _work_area(w, x, y)
+        px = min(max(x + near_w - width, left + 8), right - width - 8)
+        py = y - height - 10 if y - height - 10 > top else y + near_h + 10
+        self._pos = (px, min(py, bottom_edge - height - 8))
+        # Open: fade in and rise a little.
+        self.motion = Motion(w, self._apply_motion, alpha=0.0, rise=8.0)
+        w.attributes("-alpha", 0.0)
+        self._apply_motion(force=True)
+        w.deiconify()
+        w.lift()
+        if IS_WINDOWS:
+            try:
+                winapi.focus_window(int(w.wm_frame(), 16), timeout=0.3)
+            except Exception:
+                pass
+        w.focus_force()
+        self.text.focus_set()
+        self.text.mark_set("insert", "end-1c")
+        # A window without a title bar gets activated a moment later: put the caret in the box then.
+        w.after(60, lambda: self._closed or self.text.focus_force())
+        self.motion.to("alpha", 1, 0.2, "power2.out")
+        self.motion.to("rise", 0, 0.35, "power3.out")
+
+    def _apply_motion(self, force: bool = False) -> None:
+        if self._closed or not (force or self.win.winfo_exists()):
+            return
+        px, py = self._pos
+        self.win.geometry(f"+{px}+{py + round(self.motion['rise'])}")
+        self.win.attributes("-alpha", max(0.0, min(1.0, self.motion["alpha"])))
+
+    def _sync_placeholder(self) -> None:
+        if self.text.get("1.0", "end-1c"):
+            self.placeholder.place_forget()
+        else:
+            self.placeholder.place(x=_px(self.win, 4), y=0)  # just right of the caret
+
+    def _drag_start(self, event) -> None:
+        self._grab = (event.x_root - self.win.winfo_x(), event.y_root - self.win.winfo_y())
+        self.motion.kill("rise")
+        self.motion.set("rise", 0)
+
+    def _drag(self, event) -> None:
+        gx, gy = self._grab
+        self._pos = (event.x_root - gx, event.y_root - gy)
+        self.win.geometry(f"+{self._pos[0]}+{self._pos[1]}")
+
+    def current(self) -> str:
+        return self.text.get("1.0", "end-1c").strip()
+
+    def save(self) -> None:
+        text = self.current()
+        self.close()
+        self.on_save(text)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.win.destroy()
+        except tk.TclError:
+            pass
+        self.on_close()
 
 
 DRAG_THRESHOLD = 4
@@ -375,7 +551,7 @@ def pointer_action(dx: int, dy: int) -> str:
 
 
 def dot_click_target(x: int, undo: bool, size: int = 32, gap: int = 8, pad: int = 4) -> str | None:
-    """The dot generates. The Undo label inside the box, when shown, undoes once."""
+    """The dot regenerates. The Undo label beside it, when shown, undoes once."""
     if not undo:
         if 0 <= x < size:
             return "generate"
@@ -416,10 +592,14 @@ def save_dot_position(path: Path, x: int, y: int) -> None:
 
 
 class FloatDot:
-    """A small always-on-top dot. Drag moves it. A click calls on_click. It never reads text.
+    """A small always-on-top glass dot. Drag moves it. A click calls on_click. It never reads text.
 
-    After a prompt is written, the dot sits inside a small box with an Undo label.
-    One click on that label calls on_undo.
+    After a prompt is written, an Undo pill grows out from behind the dot.
+    One click on its label calls on_undo.
+
+    Everything moves with GSAP-style tweens (see motion.py): the dot pops in when shown,
+    lifts and glows on hover, squashes on press and springs back with a ripple on click,
+    and spins while a prompt is being written (set_busy).
     """
 
     SIZE = 32
@@ -427,6 +607,7 @@ class FloatDot:
     PAD = 4
     BOX_H = 40
     LABEL_W = 78
+    MARGIN = 12  # clear space around the dot for its shadow, glow and click ripple
     _CHROMA = "#010101"
 
     def __init__(self, root: tk.Tk, *, on_click: Callable[[], None], on_place: Callable[[int, int], None],
@@ -437,96 +618,195 @@ class FloatDot:
         self._press: tuple[int, int] | None = None
         self._origin: tuple[int, int] = (0, 0)
         self._visible = False
-        self._undo = False
+        self._undo = False    # the Undo label can be clicked
+        self._boxed = False   # the window is laid out for the Undo pill (stays on while it closes)
+        self._busy = False
+        self._dragging = False
+        self._hovered: str | None = None
         self._pin_job: str | None = None
+        self._photo = None
         w = self.win = tk.Toplevel(root)
         w.withdraw()
         w.overrideredirect(True)
         w.attributes("-topmost", True)
         w.configure(bg=self._CHROMA)
-        if IS_WINDOWS:
-            w.attributes("-transparentcolor", self._CHROMA)
-        canvas = tk.Canvas(w, width=self.SIZE, height=self.SIZE, bg=self._CHROMA,
-                           highlightthickness=0, bd=0, cursor="hand2")
+        canvas = tk.Canvas(w, bg=self._CHROMA, highlightthickness=0, bd=0, cursor="arrow")
         canvas.pack()
         self._canvas = canvas
-        self._redraw()
-        for target in (w, canvas):
-            target.bind("<ButtonPress-1>", self._down)
-            target.bind("<B1-Motion>", self._motion)
-            target.bind("<ButtonRelease-1>", self._up)
+        self._image = canvas.create_image(0, 0, anchor="nw")
+        self._font_px = max(11, round(w.winfo_fpixels("10p")))
+        # Per-pixel transparency on Windows: real see-through glass and soft shadows.
+        # Elsewhere (or if it fails), the frame is flattened onto a colour key.
+        self._layered = IS_WINDOWS
+        if not self._layered:
+            self._use_color_key()
+        self.motion = Motion(w, self._draw, alpha=1.0, scale=1.0, hover=0.0, pill=0.0, undo_hover=0.0,
+                             ripple=1.0, busy=0.0, spin=0.0)
+        canvas.bind("<ButtonPress-1>", self._down)
+        canvas.bind("<B1-Motion>", self._motion)
+        canvas.bind("<ButtonRelease-1>", self._up)
+        canvas.bind("<Motion>", self._hover)
+        canvas.bind("<Leave>", lambda e: self._dragging or self._press or self._set_hovered(None))
 
-    def _span(self) -> int:
-        if not self._undo:
-            return self.SIZE
+    # ----------------------------------------------------------------- layout
+    def _full_span(self) -> int:
         return self.PAD + self.SIZE + self.GAP + self.LABEL_W + self.PAD
 
+    def _span(self) -> int:
+        return self._full_span() if self._boxed else self.SIZE
+
     def _height(self) -> int:
-        return self.BOX_H if self._undo else self.SIZE
+        return self.BOX_H if self._boxed else self.SIZE
+
+    def _window_size(self) -> tuple[int, int]:
+        return self._span() + 2 * self.MARGIN, self._height() + 2 * self.MARGIN
+
+    def _dot_offset(self) -> tuple[int, int]:
+        """Where the dot sits inside the visible box (the pill, or just the dot)."""
+        if self._boxed:
+            return self.PAD, (self.BOX_H - self.SIZE) // 2
+        return 0, 0
 
     def _dot_origin(self) -> tuple[int, int]:
-        """Top-left of the round dot, even while it sits inside the undo box."""
-        x, y = self.win.winfo_x(), self.win.winfo_y()
-        if self._undo:
-            x += self.PAD
-            y += (self.BOX_H - self.SIZE) // 2
-        return x, y
+        """Top-left of the round dot on screen, even while it sits inside the Undo pill."""
+        ox, oy = self._dot_offset()
+        return self.win.winfo_x() + self.MARGIN + ox, self.win.winfo_y() + self.MARGIN + oy
 
-    def _round_rect(self, x1: int, y1: int, x2: int, y2: int, radius: int, fill: str) -> None:
-        r = radius
-        self._canvas.create_oval(x1, y1, x1 + 2 * r, y1 + 2 * r, fill=fill, outline="")
-        self._canvas.create_oval(x2 - 2 * r, y1, x2, y1 + 2 * r, fill=fill, outline="")
-        self._canvas.create_oval(x1, y2 - 2 * r, x1 + 2 * r, y2, fill=fill, outline="")
-        self._canvas.create_oval(x2 - 2 * r, y2 - 2 * r, x2, y2, fill=fill, outline="")
-        self._canvas.create_rectangle(x1 + r, y1, x2 - r, y2, fill=fill, outline="")
-        self._canvas.create_rectangle(x1, y1 + r, x2, y2 - r, fill=fill, outline="")
-
-    def _redraw(self) -> None:
-        width, height = self._span(), self._height()
+    def _place(self, x: int, y: int) -> None:
+        """Move so the dot's top-left is at x, y (kept on screen)."""
+        ox, oy = self._dot_offset()
+        x, y = x - ox, y - oy
+        x, y = clamp_point(x, y, self._span(), self._height(), _work_area(self.win, x, y))
+        width, height = self._window_size()
         self._canvas.configure(width=width, height=height)
-        self._canvas.delete("all")
-        dot_y = (height - self.SIZE) // 2
-        dot_x = self.PAD if self._undo else 0
-        if self._undo:
-            self._round_rect(0, 0, width, height, height // 2, "#2a2d36")
-            self._round_rect(1, 1, width - 1, height - 1, height // 2 - 1, BG)
-            label_x = dot_x + self.SIZE + self.GAP
-            self._canvas.create_text(
-                label_x, height // 2, text="↩  Undo", fill=FG, anchor="w", font=("Segoe UI", 10),
-            )
-        self._canvas.create_oval(dot_x + 2, dot_y + 2, dot_x + self.SIZE - 2, dot_y + self.SIZE - 2,
-                                 fill=ACCENT, outline="")
-        self._canvas.create_oval(dot_x + 11, dot_y + 11, dot_x + self.SIZE - 11, dot_y + self.SIZE - 11,
-                                 fill="#ffffff", outline="")
+        self.win.geometry(f"{width}x{height}+{x - self.MARGIN}+{y - self.MARGIN}")
+        if self._visible:
+            self.win.update_idletasks()
+            self._draw()
 
+    def _hit(self, x: int, y: int) -> str | None:
+        """'generate', 'undo' or None for a point in window coordinates."""
+        lx, ly = x - self.MARGIN, y - self.MARGIN
+        if not (0 <= lx < self._span() and 0 <= ly < self._height()):
+            return None
+        target = dot_click_target(lx, self._boxed, self.SIZE, self.GAP, self.PAD)
+        if target == "undo" and not self._undo:
+            return None  # the pill is closing
+        return target
+
+    # ---------------------------------------------------------------- drawing
+    def _hwnd(self) -> int:
+        return int(self.win.wm_frame(), 16)
+
+    def _use_color_key(self) -> None:
+        self._layered = False
+        if IS_WINDOWS:
+            try:
+                winapi.make_layered(self._hwnd(), False)  # Tk can't colour-key a window drawn by us
+            except Exception:
+                pass
+            self.win.attributes("-transparentcolor", self._CHROMA)
+
+    def _draw(self) -> None:
+        if not self._visible:
+            return
+        m = self.motion
+        width, height = self._window_size()
+        ox, oy = self._dot_offset()
+        dot_x, dot_y = self.MARGIN + ox, self.MARGIN + oy
+        frame = glass.Frame(
+            width, height, dot_x, dot_y, self.SIZE,
+            pill=(self.MARGIN, self.MARGIN, self._full_span(), self.BOX_H) if self._boxed else None,
+            label_x=dot_x + self.SIZE + self.GAP, font_px=self._font_px,
+            scale=m["scale"], hover=m["hover"], open=m["pill"], undo_hover=m["undo_hover"],
+            ripple=m["ripple"], busy=m["busy"], spin=m["spin"],
+        )
+        image = glass.render(frame)
+        alpha = max(0.0, min(1.0, m["alpha"]))
+        if self._layered:
+            try:
+                if winapi.update_layered(self._hwnd(), width, height, glass.premultiplied_bgra(image),
+                                         round(255 * alpha)):
+                    return
+            except Exception:
+                pass
+            self._use_color_key()
+        from PIL import ImageTk
+        self._photo = ImageTk.PhotoImage(glass.flatten(image, (30, 31, 36), (1, 1, 1)))
+        self._canvas.itemconfigure(self._image, image=self._photo)
+        self.win.attributes("-alpha", alpha)
+
+    # ------------------------------------------------------------ public API
     def set_undo(self, show: bool) -> None:
         show = bool(show)
         if self._undo == show:
             return
-        origin = self._dot_origin() if self._visible else (self.win.winfo_x(), self.win.winfo_y())
         self._undo = show
-        self._redraw()
+        if show:
+            if not self._boxed:
+                origin = self._dot_origin()
+                self._boxed = True
+                if self._visible:
+                    self._place(*origin)
+            if self._visible:
+                self.motion.to("pill", 1, 0.55, "power3.out")
+            else:
+                self.motion.set("pill", 1)
+        elif self._visible:
+            self.motion.to("pill", 0, 0.3, "power2.inOut", on_complete=self._unbox)
+        else:
+            self.motion.set("pill", 0)
+            self._unbox()
+
+    def _unbox(self) -> None:
+        """After the pill has closed: shrink the window back to just the dot."""
+        if self._undo or not self._boxed:
+            return  # it was opened again meanwhile
+        origin = self._dot_origin()
+        self._boxed = False
+        if self._hovered == "undo":
+            self._set_hovered(None)
         if self._visible:
-            self.show(*origin)
+            self._place(*origin)
+
+    def set_busy(self, busy: bool) -> None:
+        """While a prompt is being written, the white core turns into a spinner."""
+        busy = bool(busy)
+        if self._busy == busy:
+            return
+        self._busy = busy
+        m = self.motion
+        if busy:
+            m.to("busy", 1, 0.3, "power2.out")
+            m.from_to("spin", m["spin"] % 360, m["spin"] % 360 + 360, 0.9, "none", repeat=-1)
+        else:
+            m.to("busy", 0, 0.35, "power2.out", on_complete=lambda: self._busy or m.kill("spin"))
 
     def show(self, x: int, y: int) -> None:
-        # x, y is the dot's top-left. The box, when shown, wraps that same dot.
-        if self._undo:
-            x -= self.PAD
-            y -= (self.BOX_H - self.SIZE) // 2
-        area = _work_area(self.win, x, y)
-        x, y = clamp_point(x, y, self._span(), self._height(), area)
-        self.win.geometry(f"{self._span()}x{self._height()}+{x}+{y}")
+        # x, y is the dot's top-left. The pill, when shown, wraps that same dot.
+        appearing = not self._visible
+        self._place(x, y)
+        if not appearing:
+            return
         self._visible = True
+        m = self.motion
+        m.set("alpha", 0)
         self.win.deiconify()
         self.win.lift()
         self.win.attributes("-topmost", True)
         self._pin()
+        self.win.update_idletasks()
+        self._draw()  # first frame while still fully clear, so nothing flashes
+        m.from_to("alpha", 0, 1, 0.35, "power2.out")
+        m.from_to("scale", 0.3, 1, 0.75, "elastic.out")
+        m.from_to("ripple", 0, 1, 0.7, "power2.out", delay=0.12)
         self._schedule_pin()
 
     def hide(self) -> None:
         self._visible = False
         self._press = None
+        self._dragging = False
+        self.motion.kill()
         if self._pin_job is not None:
             self.win.after_cancel(self._pin_job)
             self._pin_job = None
@@ -543,8 +823,15 @@ class FloatDot:
             return
         if not self.win.winfo_viewable():
             self.win.deiconify()
+            self._draw()
         self.win.attributes("-topmost", True)
         self._pin()
+        if self._layered:
+            try:
+                if not winapi.is_layered(self._hwnd()):
+                    self._draw()  # Windows or Tk rebuilt the window: send the picture again
+            except Exception:
+                pass
         self._schedule_pin()
 
     def _pin(self) -> None:
@@ -552,30 +839,52 @@ class FloatDot:
             return
         self.win.update_idletasks()
         try:
-            winapi.pin_overlay(int(self.win.wm_frame(), 16))
+            winapi.pin_overlay(self._hwnd())
         except Exception:
             pass
 
     def bounds(self) -> tuple[int, int, int, int]:
-        return self.win.winfo_x(), self.win.winfo_y(), self._span(), self._height()
+        """The visible dot (or pill) on screen, without the clear margin around it."""
+        return self.win.winfo_x() + self.MARGIN, self.win.winfo_y() + self.MARGIN, self._span(), self._height()
+
+    # ------------------------------------------------------------ pointer
+    def _set_hovered(self, target: str | None) -> None:
+        if target == self._hovered:
+            return
+        self._hovered = target
+        m = self.motion
+        on_dot = target == "generate"
+        m.to("hover", 1.0 if on_dot else 0.0, 0.25, "power2.out")
+        m.to("scale", 1.1 if on_dot else 1.0, 0.45 if on_dot else 0.3, "back.out" if on_dot else "power2.out")
+        m.to("undo_hover", 1.0 if target == "undo" else 0.0, 0.2, "power2.out")
+        self._canvas.configure(cursor="hand2" if target else "arrow")
+
+    def _hover(self, event) -> None:
+        if self._press is None:
+            self._set_hovered(self._hit(event.x, event.y))
 
     def _down(self, event) -> None:
         self._press = (event.x_root, event.y_root)
         self._origin = (self.win.winfo_x(), self.win.winfo_y())
+        if self._hit(event.x, event.y) == "generate":
+            self.motion.to("scale", 0.86, 0.12, "power2.out")  # squash under the finger
 
     def _motion(self, event) -> None:
         if self._press is None:
             return
         dx = event.x_root - self._press[0]
         dy = event.y_root - self._press[1]
-        if pointer_action(dx, dy) != "drag":
-            return
-        nx = self._origin[0] + dx
-        ny = self._origin[1] + dy
-        area = _work_area(self.win, nx, ny)
-        x, y = clamp_point(nx, ny, self._span(), self._height(), area)
-        self.win.geometry(f"+{x}+{y}")
-        self._canvas.configure(cursor="fleur")
+        if not self._dragging:
+            if pointer_action(dx, dy) != "drag":
+                return
+            self._dragging = True
+            self.motion.to("scale", 1.14, 0.35, "back.out")  # picked up
+            self.motion.to("hover", 1.0, 0.25, "power2.out")
+            self._canvas.configure(cursor="fleur")
+        nx = self._origin[0] + dx + self.MARGIN
+        ny = self._origin[1] + dy + self.MARGIN
+        x, y = clamp_point(nx, ny, self._span(), self._height(), _work_area(self.win, nx, ny))
+        self.win.geometry(f"+{x - self.MARGIN}+{y - self.MARGIN}")
 
     def _up(self, event) -> None:
         if self._press is None:
@@ -583,13 +892,19 @@ class FloatDot:
         dx = event.x_root - self._press[0]
         dy = event.y_root - self._press[1]
         self._press = None
-        self._canvas.configure(cursor="hand2")
-        if pointer_action(dx, dy) == "click":
-            target = dot_click_target(event.x, self._undo, self.SIZE, self.GAP, self.PAD)
-            if target == "undo":
-                self.on_undo()
-            elif target == "generate":
+        dragged, self._dragging = self._dragging, False
+        target = self._hit(event.x, event.y)
+        self._hovered = None  # re-apply hover from scratch
+        self._set_hovered(target)
+        if not dragged and pointer_action(dx, dy) == "click":
+            if target == "generate":
+                m = self.motion
+                m.from_to("scale", 0.86, 1.1, 0.7, "elastic.out")  # spring back
+                m.from_to("ripple", 0, 1, 0.6, "power2.out")
                 self.on_click()
+            elif target == "undo":
+                self.motion.from_to("undo_hover", 0.2, 1.0, 0.35, "power2.out")
+                self.on_undo()
             return
         self.on_place(*self._dot_origin())
 
@@ -616,7 +931,7 @@ class KeySetupWindow:
 
         tk.Label(w, text="Welcome to Master Prompt", bg=BG, fg=FG, font=("Segoe UI Semibold", 13)
                  ).pack(anchor="w", padx=20, pady=(18, 4))
-        tk.Label(w, text="Click the dot, then Yes. The draft in the focused box becomes a better prompt.\n"
+        tk.Label(w, text="Type a prompt in any box, click the dot, then Yes. It is rewritten in place.\n"
                          "Paste an API key. The app detects the service from the key.",
                  bg=BG, fg=FG_DIM, font=FONT, justify="left", wraplength=460).pack(anchor="w", padx=20)
 
