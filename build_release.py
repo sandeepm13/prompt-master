@@ -159,8 +159,27 @@ def find_makeappx() -> Path | None:
     return None
 
 
+def find_signtool() -> Path | None:
+    candidates = [
+        Path("C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64/signtool.exe"),
+        Path("C:/Program Files (x86)/Windows Kits/10/App Certification Kit/signtool.exe"),
+    ]
+    base_kits = Path("C:/Program Files (x86)/Windows Kits/10/bin")
+    if base_kits.is_dir():
+        for p in base_kits.glob("*/x64/signtool.exe"):
+            candidates.insert(0, p)
+    which_signtool = shutil.which("signtool")
+    if which_signtool:
+        candidates.insert(0, Path(which_signtool))
+
+    for p in candidates:
+        if p.is_file():
+            return p
+    return None
+
+
 def run_msix_packaging(version: str) -> Path | None:
-    """Pack the compiled application into a Microsoft Store-ready MSIX package."""
+    """Pack the compiled application into a Microsoft Store-ready MSIX package and sign it."""
     makeappx = find_makeappx()
     if not makeappx:
         print("\n[5/6] makeappx.exe not found, skipping MSIX generation.")
@@ -210,6 +229,26 @@ def run_msix_packaging(version: str) -> Path | None:
         return None
 
     print(f"      MSIX package created: {msix_output.name}")
+
+    # Sign the MSIX package with publisher certificate for Partner Center validation
+    signtool = find_signtool()
+    cert_path = ROOT / "msix" / "store_cert.pfx"
+    if signtool and cert_path.is_file():
+        print("      Signing MSIX package with Partner Center publisher cert...")
+        sign_cmd = [
+            str(signtool),
+            "sign",
+            "/fd", "SHA256",
+            "/f", str(cert_path),
+            "/p", "dotixStore2026",
+            str(msix_output),
+        ]
+        sign_res = subprocess.run(sign_cmd, cwd=str(ROOT), capture_output=True, text=True)
+        if sign_res.returncode == 0:
+            print("      MSIX package signed successfully.")
+        else:
+            print(f"      MSIX signing warning: {sign_res.stderr or sign_res.stdout}")
+
     return msix_output
 
 
