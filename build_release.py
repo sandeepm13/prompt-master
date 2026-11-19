@@ -207,7 +207,7 @@ def run_msix_packaging(version: str) -> Path | None:
     if manifest_src.is_file():
         manifest_text = manifest_src.read_text(encoding="utf-8")
         import re
-        manifest_text = re.sub(r'Version="[\d\.]+"', f'Version="{version}.0"', manifest_text)
+        manifest_text = re.sub(r'(<Identity[^>]*?\sVersion=")[\d\.]+"', rf'\g<1>{version}.0"', manifest_text)
         (msix_staging / "AppxManifest.xml").write_text(manifest_text, encoding="utf-8")
 
     assets_src = ROOT / "msix" / "Assets"
