@@ -132,35 +132,50 @@ def run_inno_setup(version: str) -> Path:
     installer_name = f"dotix-Setup-{version}.exe"
     installer_path = DIST_DIR / installer_name
     if not installer_path.exists():
-        # Fallback if named MasterPrompt
         fallback = DIST_DIR / f"MasterPrompt-Setup-{version}.exe"
         if fallback.exists():
-            shutil.copy2(fallback, installer_path)
-
-    # Also keep MasterPrompt-Setup for backward compatibility
-    legacy_path = DIST_DIR / f"MasterPrompt-Setup-{version}.exe"
-    if not legacy_path.exists() and installer_path.exists():
-        shutil.copy2(installer_path, legacy_path)
+            shutil.move(str(fallback), str(installer_path))
 
     print(f"      Installer created: {installer_path.name}")
     return installer_path
 
 
 def sync_to_website(version: str, installer_path: Path) -> None:
-    """Copy installer to website/ so Vercel can host it for download buttons."""
-    print("\n[5/5] Syncing installer to website/ folder...")
+    """Keep website/ clean with only the latest installer and archive old .exe files."""
+    print("\n[5/5] Managing website/ installers and sync...")
     if not WEBSITE_DIR.is_dir():
         print("      website/ directory not found, skipping sync.")
         return
 
-    # Destination names
-    dest_dotix = WEBSITE_DIR / f"dotix-Setup-{version}.exe"
-    dest_legacy = WEBSITE_DIR / f"MasterPrompt-Setup-{version}.exe"
+    # Archive any old or redundant .exe files in website/ to dist_archive/website_archived_exes
+    target_name = f"dotix-Setup-{version}.exe"
+    website_archive = ARCHIVE_DIR / "website_archived_exes"
+    existing_exes = [f for f in WEBSITE_DIR.glob("*.exe") if f.name != target_name]
+    if existing_exes:
+        website_archive.mkdir(parents=True, exist_ok=True)
+        for old_exe in existing_exes:
+            dest = website_archive / old_exe.name
+            print(f"      Archiving old website exe: {old_exe.name} -> dist_archive/website_archived_exes/{old_exe.name}")
+            shutil.move(str(old_exe), str(dest))
 
+    # Copy current installer to website/
+    dest_dotix = WEBSITE_DIR / target_name
     shutil.copy2(installer_path, dest_dotix)
-    shutil.copy2(installer_path, dest_legacy)
     print(f"      Copied {installer_path.name} -> website/{dest_dotix.name}")
-    print(f"      Copied {installer_path.name} -> website/{dest_legacy.name}")
+
+    # Ensure website/api/download.js redirects to the current installer version
+    download_js = WEBSITE_DIR / "api" / "download.js"
+    if download_js.is_file():
+        content = download_js.read_text(encoding="utf-8")
+        import re
+        new_content = re.sub(
+            r"const FILE\s*=\s*['\"].*?['\"];",
+            f"const FILE = '/{target_name}';",
+            content,
+        )
+        if new_content != content:
+            download_js.write_text(new_content, encoding="utf-8")
+            print(f"      Updated website/api/download.js to point to /{target_name}")
 
 
 def main() -> int:
@@ -188,7 +203,6 @@ def main() -> int:
         print(f"  SHA-256:    {checksum}")
         print("\n  Files ready to upload to GitHub Releases:")
         print(f"    - {installer.resolve()}")
-        print(f"    - {(DIST_DIR / f'MasterPrompt-Setup-{version}.exe').resolve()}")
         print("=" * 64)
         return 0
     except Exception as e:
