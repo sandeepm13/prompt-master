@@ -1,10 +1,10 @@
-; Inno Setup script - makes dist\MasterPrompt-Setup-<version>.exe
+; Inno Setup script - makes dist\dotix-Setup-<version>.exe
 ; Build it with build-exe.bat (which passes the version number in).
-; Installs per user (no admin rights needed) into %LOCALAPPDATA%\Programs\Master Prompt.
+; Installs per user (no admin rights needed) into %LOCALAPPDATA%\Programs\dotix.
 ; Settings + API key live in %APPDATA%\MasterPrompt and are kept on uninstall/upgrade.
 
 #ifndef AppVersion
-  #define AppVersion "2.0.0"
+  #define AppVersion "2.1.0"
 #endif
 
 [Setup]
@@ -27,6 +27,13 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+VersionInfoVersion={#AppVersion}.0
+VersionInfoCompany=Sandeep Mopuri
+VersionInfoDescription=dotix - prompt magic across all your apps
+VersionInfoTextVersion={#AppVersion}
+VersionInfoCopyright=Copyright (C) 2026 Sandeep Mopuri
+VersionInfoProductName=dotix
+VersionInfoProductVersion={#AppVersion}
 
 [Tasks]
 Name: "startup"; Description: "Start dotix automatically when I log in to Windows (recommended)"

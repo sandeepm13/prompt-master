@@ -140,9 +140,82 @@ def run_inno_setup(version: str) -> Path:
     return installer_path
 
 
+def find_makeappx() -> Path | None:
+    candidates = [
+        Path("C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64/makeappx.exe"),
+        Path("C:/Program Files (x86)/Windows Kits/10/App Certification Kit/makeappx.exe"),
+    ]
+    base_kits = Path("C:/Program Files (x86)/Windows Kits/10/bin")
+    if base_kits.is_dir():
+        for p in base_kits.glob("*/x64/makeappx.exe"):
+            candidates.insert(0, p)
+    which_makeappx = shutil.which("makeappx")
+    if which_makeappx:
+        candidates.insert(0, Path(which_makeappx))
+
+    for p in candidates:
+        if p.is_file():
+            return p
+    return None
+
+
+def run_msix_packaging(version: str) -> Path | None:
+    """Pack the compiled application into a Microsoft Store-ready MSIX package."""
+    makeappx = find_makeappx()
+    if not makeappx:
+        print("\n[5/6] makeappx.exe not found, skipping MSIX generation.")
+        return None
+
+    print("\n[5/6] Building MSIX Package for Microsoft Store...")
+    msix_staging = BUILD_DIR / "msix_staging"
+    if msix_staging.exists():
+        shutil.rmtree(msix_staging, ignore_errors=True)
+    msix_staging.mkdir(parents=True, exist_ok=True)
+
+    source_app = DIST_DIR / "MasterPrompt"
+    if not source_app.is_dir():
+        print("      Compiled app directory dist/MasterPrompt not found, skipping MSIX.")
+        return None
+
+    for item in source_app.iterdir():
+        dest = msix_staging / item.name
+        if item.is_dir():
+            shutil.copytree(str(item), str(dest))
+        else:
+            shutil.copy2(str(item), str(dest))
+
+    manifest_src = ROOT / "msix" / "AppxManifest.xml"
+    if manifest_src.is_file():
+        manifest_text = manifest_src.read_text(encoding="utf-8")
+        import re
+        manifest_text = re.sub(r'Version="[\d\.]+"', f'Version="{version}.0"', manifest_text)
+        (msix_staging / "AppxManifest.xml").write_text(manifest_text, encoding="utf-8")
+
+    assets_src = ROOT / "msix" / "Assets"
+    if assets_src.is_dir():
+        shutil.copytree(str(assets_src), str(msix_staging / "Assets"))
+
+    msix_output = DIST_DIR / f"dotix-{version}.msix"
+    cmd = [
+        str(makeappx),
+        "pack",
+        "/d", str(msix_staging),
+        "/p", str(msix_output),
+        "/o",
+        "/nv",
+    ]
+    res = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"      MSIX packing warning/failed: {res.stderr or res.stdout}")
+        return None
+
+    print(f"      MSIX package created: {msix_output.name}")
+    return msix_output
+
+
 def sync_to_website(version: str, installer_path: Path) -> None:
     """Keep website/ clean with only the latest installer and archive old .exe files."""
-    print("\n[5/5] Managing website/ installers and sync...")
+    print("\n[6/6] Managing website/ installers and sync...")
     if not WEBSITE_DIR.is_dir():
         print("      website/ directory not found, skipping sync.")
         return
@@ -169,13 +242,13 @@ def sync_to_website(version: str, installer_path: Path) -> None:
         content = download_js.read_text(encoding="utf-8")
         import re
         new_content = re.sub(
-            r"const FILE\s*=\s*['\"].*?['\"];",
-            f"const FILE = '/{target_name}';",
+            r"const FALLBACK_FILE\s*=\s*['\"].*?['\"];",
+            f"const FALLBACK_FILE = '/{target_name}';",
             content,
         )
         if new_content != content:
             download_js.write_text(new_content, encoding="utf-8")
-            print(f"      Updated website/api/download.js to point to /{target_name}")
+            print(f"      Updated website/api/download.js fallback to /{target_name}")
 
 
 def main() -> int:
@@ -189,6 +262,7 @@ def main() -> int:
         clean_build_cache()
         run_pyinstaller()
         installer = run_inno_setup(version)
+        msix_pkg = run_msix_packaging(version)
         sync_to_website(version, installer)
 
         # Print final release summary
@@ -198,11 +272,19 @@ def main() -> int:
         print("\n" + "=" * 64)
         print("  BUILD & PACKAGING COMPLETE!")
         print("=" * 64)
-        print(f"  Installer:  {installer.resolve()}")
-        print(f"  File size:  {size_mb:.2f} MB")
-        print(f"  SHA-256:    {checksum}")
-        print("\n  Files ready to upload to GitHub Releases:")
-        print(f"    - {installer.resolve()}")
+        print(f"  Win32 Installer: {installer.resolve()}")
+        print(f"  File size:       {size_mb:.2f} MB")
+        print(f"  SHA-256:         {checksum}")
+        if msix_pkg and msix_pkg.exists():
+            msix_size = msix_pkg.stat().st_size / (1024 * 1024)
+            msix_hash = sha256_file(msix_pkg)
+            print(f"\n  MSIX Store Package: {msix_pkg.resolve()}")
+            print(f"  File size:          {msix_size:.2f} MB")
+            print(f"  SHA-256:            {msix_hash}")
+        print("\n  Outputs ready for release:")
+        print(f"    - GitHub Releases: {installer.name}")
+        if msix_pkg and msix_pkg.exists():
+            print(f"    - Microsoft Store: {msix_pkg.name} (upload to Partner Center)")
         print("=" * 64)
         return 0
     except Exception as e:
