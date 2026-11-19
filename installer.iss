@@ -11,7 +11,7 @@
 AppId={{6F3A2C1E-8B4D-4E7A-9C2F-5D1B7A9E3C40}
 AppName=dotix
 AppVersion={#AppVersion}
-AppPublisher=Sandeep Mopuri
+AppPublisher=DharmaTeja
 AppComments=dotix - prompt magic across all your apps.
 DefaultDirName={localappdata}\Programs\dotix
 DisableProgramGroupPage=yes
@@ -28,10 +28,10 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 VersionInfoVersion={#AppVersion}.0
-VersionInfoCompany=Sandeep Mopuri
+VersionInfoCompany=DharmaTeja
 VersionInfoDescription=dotix - prompt magic across all your apps
 VersionInfoTextVersion={#AppVersion}
-VersionInfoCopyright=Copyright (C) 2026 Sandeep Mopuri
+VersionInfoCopyright=Copyright (C) 2026 DharmaTeja
 VersionInfoProductName=dotix
 VersionInfoProductVersion={#AppVersion}
 

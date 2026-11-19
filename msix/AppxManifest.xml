@@ -6,14 +6,14 @@
   IgnorableNamespaces="uap rescap">
 
   <Identity
-    Name="dotix"
-    Publisher="CN=SandeepMopuri"
+    Name="DharmaTeja.dotix"
+    Publisher="CN=50EF40BD-15A3-4992-B303-1270B9FCB722"
     Version="2.1.0.0"
     ProcessorArchitecture="x64" />
 
   <Properties>
     <DisplayName>dotix</DisplayName>
-    <PublisherDisplayName>Sandeep Mopuri</PublisherDisplayName>
+    <PublisherDisplayName>DharmaTeja</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
     <Description>dotix - prompt magic across all your apps.</Description>
   </Properties>
