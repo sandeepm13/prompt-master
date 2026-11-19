@@ -563,8 +563,17 @@ def load_app_fonts(fonts_dir: Path | None = None) -> None:
     if not IS_WINDOWS:
         return
     if fonts_dir is None:
-        fonts_dir = Path(__file__).resolve().parent.parent / "assets" / "fonts"
-    if not fonts_dir.is_dir():
+        candidates = []
+        if getattr(sys, "frozen", False):
+            base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+            candidates.append(base / "assets" / "fonts")
+            candidates.append(Path(sys.executable).resolve().parent / "assets" / "fonts")
+        candidates.append(Path(__file__).resolve().parent.parent / "assets" / "fonts")
+        for c in candidates:
+            if c.is_dir():
+                fonts_dir = c
+                break
+    if not fonts_dir or not fonts_dir.is_dir():
         return
     FR_PRIVATE = 0x10
     gdi = ctypes.WinDLL("gdi32", use_last_error=True)
