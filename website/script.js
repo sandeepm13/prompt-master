@@ -138,29 +138,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const downloadCount = document.getElementById('download-count');
   
   if (downloadBtn && downloadCount) {
-    const getStoredCount = () => {
-      try {
-        return parseInt(localStorage.getItem('pm_download_count') || '0', 10) || 0;
-      } catch (e) {
-        return 0;
-      }
-    };
-
-    const setStoredCount = (val) => {
-      try {
-        localStorage.setItem('pm_download_count', String(val));
-      } catch (e) {}
-    };
+    // Clear legacy localStorage to ensure cross-device synchronization
+    try {
+      localStorage.removeItem('pm_download_count');
+      localStorage.removeItem('dotix_download_count');
+    } catch (e) {}
 
     const formatCount = (num) => `${num} ${num === 1 ? 'download' : 'downloads'}`;
+    let count = null;
 
-    // Initialize with stored count if available to avoid "..." flash or reverting
-    let count = getStoredCount();
-    if (count > 0) {
-      downloadCount.textContent = formatCount(count);
-    }
-
-    // Live total from /api/count: GitHub release downloads + downloads served by this site
+    // Live total from /api/count (GitHub release downloads across all versions)
     fetch('/api/count', { cache: 'no-store' })
       .then(res => {
         if (!res.ok) throw new Error(`count ${res.status}`);
@@ -168,26 +155,23 @@ document.addEventListener('DOMContentLoaded', () => {
       })
       .then(data => {
         if (typeof data.count === 'number') {
-          // Monotonic: count never drops backwards even if the edge cache is a minute behind
-          count = Math.max(data.count, count, getStoredCount());
-          setStoredCount(count);
+          count = data.count;
           downloadCount.textContent = formatCount(count);
+          downloadCount.style.display = '';
         }
       })
       .catch(() => {
-        // If fetch fails but we have a stored count, keep showing it
-        if (count > 0) {
-          downloadCount.textContent = formatCount(count);
-        } else {
+        if (count === null) {
           downloadCount.style.display = 'none';
         }
       });
 
-    // Optimistically update and persist immediately on click
+    // Provide immediate visual feedback for the downloader without persisting locally
     downloadBtn.addEventListener('click', () => {
-      count = Math.max(count, getStoredCount()) + 1;
-      setStoredCount(count);
-      downloadCount.textContent = formatCount(count);
+      if (typeof count === 'number') {
+        count += 1;
+        downloadCount.textContent = formatCount(count);
+      }
     });
   }
 });

@@ -56,6 +56,6 @@ module.exports = async (req, res) => {
     return;
   }
   res.statusCode = 200;
-  res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=600');
+  res.setHeader('Cache-Control', 'public, s-maxage=30, stale-while-revalidate=60');
   res.end(JSON.stringify({ count: github + vercel, github, vercel }));
 };
